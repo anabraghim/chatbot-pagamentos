@@ -11,6 +11,8 @@ const envSchema = z.object({
     //JWT_SECRET: z.string().min(1),
     OPENROUTER_API_KEY: z.string().min(1),
     OPENROUTER_MODEL: z.string().min(1).default("minimax/minimax-m3:free"),
+    // Usuário fixo usado enquanto não existe autenticação. Ver src/db/seed.ts
+    DEMO_USER_ID: z.uuid().default("00000000-0000-0000-0000-000000000001"),
 })
 
 const parsed = envSchema.safeParse(process.env)
