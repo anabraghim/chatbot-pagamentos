@@ -6,6 +6,7 @@ import type { ChatMessage, ToolCall } from "./types"
 const TOOL_LABELS: Record<string, string> = {
     listar_catalogo: "consultando catálogo…",
     registrar_intencao: "registrando intenção de compra…",
+    realizar_compra: "processando pagamento…",
 }
 
 function toolCallLabel(toolCalls: ToolCall[]) {
