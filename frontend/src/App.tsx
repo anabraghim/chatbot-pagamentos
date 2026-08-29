@@ -1,7 +1,17 @@
 import { useState } from "react"
 import "./App.css"
 import { sendChat } from "./api"
-import type { ChatMessage } from "./types"
+import type { ChatMessage, ToolCall } from "./types"
+
+const TOOL_LABELS: Record<string, string> = {
+    listar_catalogo: "consultando catálogo…",
+    registrar_intencao: "registrando intenção de compra…",
+}
+
+function toolCallLabel(toolCalls: ToolCall[]) {
+    const labels = toolCalls.map((call) => TOOL_LABELS[call.function.name] ?? `executando ${call.function.name}…`)
+    return `🔧 ${[...new Set(labels)].join(" ")}`
+}
 
 function App() {
     const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -39,7 +49,7 @@ function App() {
                     .map((m, i) => (
                         <div key={i} className={`bubble bubble-${m.role}`}>
                             {m.tool_calls && m.tool_calls.length > 0
-                                ? "🔧 consultando catálogo…"
+                                ? toolCallLabel(m.tool_calls)
                                 : m.content}
                         </div>
                     ))}
