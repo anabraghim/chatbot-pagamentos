@@ -1,108 +1,54 @@
-import { McpServer } from "@modelcontextprotocol/server";
-import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
+import { db } from "../../backend/src/db/db.ts"
 
-type Produto = {
-    id: string;
-    nome: string;
-    preco: number;
-    moeda: string;
-    estoque: number;
-    categoria: string;
-}
-
-const produtos: Produto[] = [
-    {
-        id: "001",
-        nome: "Notebook",
-        preco: 3500,
-        moeda: "BRL",
-        estoque: 10,
-        categoria: "Informática",
-    },
-    {
-        id: "002",
-        nome: "Mouse sem fio",
-        preco: 120,
-        moeda: "BRL",
-        estoque: 25,
-        categoria: "Periféricos"
-    },
-    {
-        id: "003",
-        nome: "Teclado mecânico",
-        preco: 450,
-        moeda: "BRL",
-        estoque: 15,
-        categoria: "Periféricos"
-    },
-    {
-        id: "004",
-        nome: "Monitor 24 polegadas",
-        preco: 900,
-        moeda: "BRL",
-        estoque: 8,
-        categoria: "Informática"
-    },
-    {
-        id: "005",
-        nome: "Headset",
-        preco: 280,
-        moeda: "BRL",
-        estoque: 20,
-        categoria: "Áudio"
-    },
-];
 const server = new McpServer({
-    name: "payment",
-    version: "1.0.0"
-});
-
-const produtoSchema = {
-    id: z.string(),
-    nome: z.string(),
-    preco: z.number(),
-    moeda: z.string(),
-    estoque: z.number(),
-    categoria: z.string()
-}
-
-const outputSchema = {
-    produtos: z.array(z.object(produtoSchema))
-}
-
-//register reather tools (manipulador de execução de ferramentas)
-//responsável por executar a lógica de cada tool
+    name: "payment-agent-catalog",
+    version: "0.1.0",
+})
 
 server.registerTool(
     "listar_catalogo",
     {
-        description: "Lista os produtos disponíveis no catálogo",
+        title: "Listar catálogo",
+        description: "Retorna os produtos disponíveis no catálogo, com filtro opcional por categoria.",
         inputSchema: {
-            categoria: z.string().optional().describe("Filtro opcional por categoria")
+            categoria: z.string().optional().describe("Filtro opcional por categoria de produto."),
         },
-        outputSchema
+        outputSchema: {
+            produtos: z.array(
+                z.object({
+                    id: z.string(),
+                    nome: z.string(),
+                    preco: z.number(),
+                    moeda: z.string(),
+                    estoque: z.number(),
+                })
+            ),
+        },
     },
     async ({ categoria }) => {
+        const rows = await db.query.ProductsTable.findMany({
+            where: categoria ? { category: categoria } : undefined,
+        })
 
-        const produtosFiltrados = categoria ? 
-        produtos.filter(
-            (produto) => produto.categoria.toLowerCase() === categoria.toLowerCase()
-        )
-        : produtos
+        const produtos = rows.map((p) => ({
+            id: p.id,
+            nome: p.name,
+            preco: p.price,
+            moeda: p.currency,
+            estoque: p.stock,
+        }))
 
         return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify({
-                        produtos: produtosFiltrados
-                    })
-                }
-                ],
-            structuredContent: {
-                produtos: produtosFiltrados
-            }
-                }
+            content: [{ type: "text" as const, text: JSON.stringify({ produtos }) }],
+            structuredContent: { produtos },
+        }
     }
 )
+
+const transport = new StdioServerTransport()
+await server.connect(transport)
+
+console.error("[mcp-server] listar_catalogo pronto (stdio)")
