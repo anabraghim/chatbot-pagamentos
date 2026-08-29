@@ -4,13 +4,17 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@hono/standard-validator": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^1.0.0-rc.2",
     "hono": "^4.13.5",
+    "openai": "^7.8.0",
     "pg": "^8.23.0",
     "zod": "^4.4.3"
   },

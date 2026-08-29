@@ -1,0 +1,49 @@
+.chat {
+    max-width: 640px;
+    margin: 2rem auto;
+    display: flex;
+    flex-direction: column;
+    height: 80vh;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1rem;
+    border: 1px solid #444;
+    border-radius: 8px;
+}
+
+.bubble {
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    max-width: 80%;
+    text-align: left;
+    white-space: pre-wrap;
+}
+
+.bubble-user {
+    align-self: flex-end;
+    background: #2563eb;
+    color: white;
+}
+
+.bubble-assistant {
+    align-self: flex-start;
+    background: #333;
+    color: white;
+}
+
+.chat-input {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 0.5rem;
+}
