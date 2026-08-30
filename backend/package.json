@@ -11,6 +11,7 @@
     "@hono/node-server": "^2.1.1",
     "@hono/standard-validator": "^0.4.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^1.0.0-rc.2",
     "hono": "^4.13.5",
@@ -19,6 +20,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^1.0.0-rc.2",

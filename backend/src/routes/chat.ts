@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { sValidator } from "@hono/standard-validator"
 import { z } from "zod"
 import { runAgentLoop } from "../services/agent.ts"
-import { env } from "../data/env.ts"
+import { requireAuth } from "../middleware/auth.ts"
 
 const messageSchema = z.object({
     role: z.enum(["user", "assistant", "tool"]),
@@ -18,11 +18,11 @@ const chatRequestSchema = z.object({
 
 const app = new Hono()
 
-app.post("/", sValidator("json", chatRequestSchema), async (c) => {
+app.post("/", requireAuth, sValidator("json", chatRequestSchema), async (c) => {
     const { messages } = c.req.valid("json")
 
-    // ! TROCAR POR c.get("userId") QUANDO O MIDDLEWARE DE AUTENTICAÇÃO ENTRAR
-    const userId = env.DEMO_USER_ID
+    // Identidade agora vem do JWT validado por requireAuth, não mais do stub.
+    const userId = c.get("userId") as string
 
     const updated = await runAgentLoop(messages as any, userId)
     return c.json({ messages: updated })

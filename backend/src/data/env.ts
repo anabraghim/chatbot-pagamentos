@@ -8,10 +8,11 @@ const envSchema = z.object({
     DB_NAME: z.string().min(1),
     DB_HOST: z.string().min(1),
     DB_PORT: z.coerce.number().int().positive(),
-    //JWT_SECRET: z.string().min(1),
+    JWT_SECRET: z.string().min(1),
     OPENROUTER_API_KEY: z.string().min(1),
     OPENROUTER_MODEL: z.string().min(1).default("minimax/minimax-m3:free"),
-    // Usuário fixo usado enquanto não existe autenticação. Ver src/db/seed.ts
+    // Mantido por compatibilidade com o seed; não é mais usado no fluxo do chat
+    // agora que a identidade vem do JWT (ver src/routes/chat.ts).
     DEMO_USER_ID: z.uuid().default("00000000-0000-0000-0000-000000000001"),
 })
 

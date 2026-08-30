@@ -1,0 +1,119 @@
+.chat-page {
+    max-width: 640px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    border-bottom: 1px solid #444;
+}
+
+.chat-header .brand {
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    color: #4fb3a3;
+}
+
+.chat-header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.limit-pill {
+    background: #16332d;
+    color: #4fb3a3;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.username {
+    color: #aaa;
+}
+
+.logout-btn {
+    background: none;
+    border: 1px solid #555;
+    color: #ccc;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.78rem;
+}
+
+.logout-btn:hover {
+    border-color: #999;
+    color: #fff;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1rem;
+}
+
+.bubble {
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    max-width: 80%;
+    text-align: left;
+}
+
+/* react-markdown envolve texto em <p>; sem isso, cada linha vira um
+   parágrafo com margem grande e a bolha fica com espaço demais. */
+.bubble p {
+    margin: 0 0 0.4rem;
+}
+
+.bubble p:last-child {
+    margin-bottom: 0;
+}
+
+.bubble ul,
+.bubble ol {
+    margin: 0.3rem 0;
+    padding-left: 1.2rem;
+}
+
+.bubble code {
+    background: rgba(255, 255, 255, 0.15);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+.bubble-user {
+    align-self: flex-end;
+    background: #2563eb;
+    color: white;
+}
+
+.bubble-assistant {
+    align-self: flex-start;
+    background: #333;
+    color: white;
+}
+
+.chat-input {
+    display: flex;
+    gap: 0.5rem;
+    padding: 1rem;
+    border-top: 1px solid #444;
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 0.5rem;
+}
