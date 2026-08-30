@@ -17,12 +17,12 @@ Frontend (chat React)  →  Backend (agente + cliente MCP)  →  Servidor MCP (3
 | Frontend e backend rodando localmente | ✅ |
 | Servidor MCP com as 3 tools, descobertas pelo agente | ✅ |
 | Tools respeitam os contratos de argumentos e retorno | ✅ |
-| Compra concluída com `cartao` **e** com `pix` | ✅ |
+| Compra concluída com `cartao` e com `pix` | ✅ |
 | `realizar_compra` exige `intencao_id` válido e recusa id inventado | ✅ |
 | Tentativa acima do limite retorna erro, explicado pelo agente | ✅ |
 | Limite armazenado e validado no backend | ✅ |
 | Histórico completo enviado ao modelo a cada turno | ✅ |
-| **Login funcionando; chat inacessível sem autenticação** | ❌ **falta** |
+| Login funcionando; chat inacessível sem autenticação | ✅ |
 
 A única peça que falta é a **autenticação**. Tudo o mais do desafio está implementado e verificado. Como o chat ainda é aberto, o usuário é resolvido por um stub — explicado na seção seguinte, porque é a parte do projeto que mais confunde quem chega agora.
 
