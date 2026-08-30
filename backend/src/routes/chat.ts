@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { sValidator } from "@hono/standard-validator"
 import { z } from "zod"
 import { runAgentLoop } from "../services/agent.ts"
-import { requireAuth } from "../middleware/auth.ts"
+import { requireAuth, type AuthEnv } from "../middleware/auth.ts"
 
 const messageSchema = z.object({
     role: z.enum(["user", "assistant", "tool"]),
@@ -16,7 +16,7 @@ const chatRequestSchema = z.object({
     messages: z.array(messageSchema).min(1),
 })
 
-const app = new Hono()
+const app = new Hono<AuthEnv>()
 
 app.post("/", requireAuth, sValidator("json", chatRequestSchema), async (c) => {
     const { messages } = c.req.valid("json")
