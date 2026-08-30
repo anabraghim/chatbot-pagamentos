@@ -10,7 +10,7 @@ import { env } from "../data/env.ts"
 import { requireAuth, type AuthEnv } from "../middleware/auth.ts"
 
 const registerSchema = z.object({
-    name: z.string().min(1),git
+    name: z.string().min(1),
     email: z.string().email(),
     password: z.string().min(6),
 })
