@@ -7,20 +7,20 @@ import { eq } from "drizzle-orm"
 import { db } from "../db/db.ts"
 import { UsersTable } from "../db/schema.ts"
 import { env } from "../data/env.ts"
-import { requireAuth } from "../middleware/auth.ts"
+import { requireAuth, type AuthEnv } from "../middleware/auth.ts"
 
 const registerSchema = z.object({
-    name: z.string().min(1),
+    name: z.string().min(1),git
     email: z.string().email(),
     password: z.string().min(6),
 })
 
 const loginSchema = z.object({
-    email: z.string().email(),
+    email: z.string().min(1),
     password: z.string().min(1),
 })
 
-const app = new Hono()
+const app = new Hono<AuthEnv>()
 
 // Limite inicial dado a quem se cadastra pelo formulário. O usuário demo
 // do seed continua com 5000, pra não quebrar os testes de LIMITE_EXCEDIDO
