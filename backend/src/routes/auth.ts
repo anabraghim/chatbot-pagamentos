@@ -77,7 +77,16 @@ app.get("/me", requireAuth, async (c) => {
         return c.json({ error: "Usuário não encontrado" }, 404)
     }
 
-    return c.json({ name: user.name, email: user.email, spendingLimit: user.spendingLimit })
+    // Mesma derivação de purchase.ts: spendingLimit é o teto fixo, o que muda é a
+    // soma das transações aprovadas.
+    const [spentRow] = await db
+        .select({ spent: sum(TransactionsTable.amount) })
+        .from(TransactionsTable)
+        .where(and(eq(TransactionsTable.userId, userId), eq(TransactionsTable.status, "aprovado")))
+
+    const remaining = money(user.spendingLimit - Number(spentRow?.spent ?? 0))
+
+    return c.json({ name: user.name, email: user.email, spendingLimit: remaining })
 })
 
 export default app
