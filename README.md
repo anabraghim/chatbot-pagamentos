@@ -1,293 +1,271 @@
 # Chatbot de Pagamentos com Tools MCP
 
-Chatbot que conversa com um LLM e executa compras (simuladas) através de ferramentas expostas via MCP.
+Chatbot que conversa com um LLM e executa compras (simuladas) através de ferramentas expostas via **MCP** (Model Context Protocol), com autenticação por JWT e limite de gasto validado no backend.
+
+`Node.js` · `TypeScript` · `Hono` · `PostgreSQL` · `Drizzle ORM` · `React` · `Vite` · `MCP SDK` · `OpenRouter`
 
 ```
-Frontend (chat React)  →  Backend (agente + cliente MCP)  →  Servidor MCP (3 tools)  →  Postgres
+Frontend (chat React)  →  Backend (auth · agente · cliente MCP)  →  Servidor MCP (3 tools)  →  PostgreSQL
+        JWT                          stdio
 ```
 
-**Modelo usado:** [OpenRouter](https://openrouter.ai/) com o modelo gratuito `minimax/minimax-m3:free`, configurável via `OPENROUTER_MODEL` em `backend/.env`. Modelos gratuitos na OpenRouter mudam de disponibilidade com frequência — se o padrão ficar indisponível ou rate-limited, troque por outro nessa variável.
+O agente não decide nada sozinho: ele **descobre** as tools do servidor MCP em runtime e as chama, mas quem valida identidade, preço, estoque e limite é o backend. Duas regras sustentam isso:
+
+- **O valor nunca é argumento de tool.** É calculado no servidor a partir do catálogo, e `realizar_compra` lê o valor da intenção gravada — o modelo não inventa nem negocia preço.
+- **A identidade nunca é argumento de tool.** Viaja no `_meta` do MCP, então não aparece no `inputSchema` e o modelo sequer sabe que ela existe.
 
 ---
 
-## Estado do projeto
+## Requisitos do desafio atendidos
 
-| Critério do desafio | Status |
+| Critério | Onde está no código |
 |---|---|
-| Frontend e backend rodando localmente | ✅ |
-| Servidor MCP com as 3 tools, descobertas pelo agente | ✅ |
-| Tools respeitam os contratos de argumentos e retorno | ✅ |
-| Compra concluída com `cartao` e com `pix` | ✅ |
-| `realizar_compra` exige `intencao_id` válido e recusa id inventado | ✅ |
-| Tentativa acima do limite retorna erro, explicado pelo agente | ✅ |
-| Limite armazenado e validado no backend | ✅ |
-| Histórico completo enviado ao modelo a cada turno | ✅ |
-| Login funcionando; chat inacessível sem autenticação | ✅ |
+| ✅ Frontend e backend rodando localmente | [`frontend/`](frontend/) · [`backend/`](backend/) |
+| ✅ Login funcionando; chat inacessível sem autenticação | [`routes/auth.ts`](backend/src/routes/auth.ts) · [`middleware/auth.ts`](backend/src/middleware/auth.ts) · [`lib/auth.tsx`](frontend/src/lib/auth.tsx) |
+| ✅ Servidor MCP com as 3 tools, descobertas pelo agente | [`mcp-server/src/tools/`](mcp-server/src/tools/) · `client.listTools()` em [`agent.ts`](backend/src/services/agent.ts) |
+| ✅ Tools respeitam os contratos de argumentos e retorno | [ver contratos](#tools-mcp) |
+| ✅ Compra concluída com `cartao` e com `pix` | `PAYMENT_METHODS` em [`purchase.ts`](backend/src/services/purchase.ts) |
+| ✅ `realizar_compra` exige `intencao_id` válido e recusa id inventado | guard de uuid em [`realizar-compra.ts`](mcp-server/src/tools/realizar-compra.ts) + busca por `id` **e** `userId` em [`purchase.ts`](backend/src/services/purchase.ts) |
+| ✅ Tentativa acima do limite retorna erro, explicado pelo agente | `LIMITE_EXCEDIDO` em [`purchase.ts`](backend/src/services/purchase.ts) |
+| ✅ Limite armazenado e validado no backend | coluna `users.spendingLimit` |
+| ✅ Histórico completo enviado ao modelo a cada turno | [`agent.ts`](backend/src/services/agent.ts) · [`ChatPage.tsx`](frontend/src/pages/ChatPage.tsx) |
+| ✅ README com instruções de execução e modelo usado | este arquivo |
 
-A única peça que falta é a **autenticação**. Tudo o mais do desafio está implementado e verificado. Como o chat ainda é aberto, o usuário é resolvido por um stub — explicado na seção seguinte, porque é a parte do projeto que mais confunde quem chega agora.
-
----
-
-## Como a identidade do usuário funciona hoje
-
-Enquanto não existe login, o backend usa um **usuário fixo de desenvolvimento** (um *stub de identidade*), criado pelo `npm run seed` e identificado pela variável `DEMO_USER_ID`.
-
-O ponto importante: **o stub está em um lugar só.** Ele não está espalhado pelas tools nem no prompt. É esta linha, em [`backend/src/routes/chat.ts`](backend/src/routes/chat.ts):
-
-```ts
-// ! TROCAR POR c.get("userId") QUANDO O MIDDLEWARE DE AUTENTICAÇÃO ENTRAR
-const userId = env.DEMO_USER_ID
-```
-
-Essa linha é a **costura de identidade**. Daí para baixo, a cadeia inteira já é código de produção:
-
-```
-chat.ts (fonte da identidade)
-  └→ runAgentLoop(messages, userId)      services/agent.ts
-       └→ _meta do MCP                   { "payment-agent/userId": userId }
-            └→ extra._meta na tool       mcp-server/src/tools/*.ts
-                 └→ executePurchase({ userId })   services/purchase.ts
-```
-
-Nenhuma dessas camadas sabe que o usuário é um stub — elas recebem um uuid de usuário comum e o tratam como tal.
-
-**Por que a identidade viaja no `_meta` e não como argumento da tool:** assim ela não aparece no `inputSchema`, o modelo nunca a vê e não consegue forjá-la. Um argumento comum também não funcionaria, porque o `inputSchema` é um `z.object` em modo *strip* — uma chave não declarada seria descartada antes de chegar ao handler.
-
-**O backend já é multiusuário.** O isolamento por usuário não é teórico: `purchase.ts` busca a intenção por `id` **e** `userId` juntos, e o limite de gasto é calculado por usuário. Uma intenção pertencente a outro usuário é recusada com `INTENCAO_INVALIDA`. O que é de um usuário só é a **porta de entrada**, não o modelo de dados.
-
-**O que muda quando a autenticação entrar:**
-
-| Camada | Muda? |
-|---|---|
-| Tools MCP (`realizar_compra`, `registrar_intencao`, `listar_catalogo`) | Não |
-| `services/purchase.ts`, `services/agent.ts` | Não |
-| Tabelas `intentions`, `transactions`, `products` | Não |
-| `chat.ts` — trocar o stub por `c.get("userId")` | Sim, 1 linha |
-| Middleware de autenticação + rota de login | Novo |
-| Tabela `users` — coluna de credencial (o formato depende do método escolhido) | Nova coluna |
-
-O `JWT_SECRET` já está previsto (comentado) em `src/data/env.ts`.
+Além do mínimo pedido: expiração de intenção, estoque insuficiente, método de pagamento inválido, corrida entre dois pagamentos simultâneos da mesma intenção e isolamento entre usuários.
 
 ---
 
-## Rodando o projeto
+## Estrutura
 
-**Pré-requisitos:** Node.js 20+ e Docker (com Docker Compose ativo — no Docker Desktop, o app precisa estar aberto).
+Não existe `package.json` na raiz: são **três pacotes npm independentes**.
 
-Não existe `package.json` na raiz: são **três pacotes independentes**, cada um com seu próprio `npm install`.
+```
+backend/      API, autenticação, loop do agente e cliente MCP  ·  :3000
+mcp-server/   as 3 tools MCP  ·  iniciado pelo backend por stdio, não roda sozinho
+frontend/     chat React com login e rota protegida  ·  :5173
+```
 
-A ordem abaixo importa — o `docker compose` lê as credenciais do `.env`, e o backend recusa subir se faltar variável obrigatória.
+| Camada | Escolha | Por quê |
+|---|---|---|
+| API | Hono | Leve, com JWT embutido (`hono/jwt`) e tipagem de contexto (`c.get("userId")`). |
+| Banco | PostgreSQL + Drizzle | Migrações versionadas e transações reais — necessárias para a atomicidade do pagamento. |
+| Agente | SDK `openai` → OpenRouter | Modelos gratuitos com *tool calling* padrão. |
+| Tools | MCP SDK via stdio | Processo separado com contrato próprio, iniciado pelo backend — não há serviço extra para subir. |
+| Frontend | React 19 + Vite + React Router | Chat minimalista; o histórico é o próprio estado da página. |
 
-### 1. Clone e instale as dependências dos três pacotes
+---
+
+## Como rodar
+
+**Pré-requisitos:** Node.js 20+, Docker (com Compose ativo) e uma chave gratuita da OpenRouter (<https://openrouter.ai/keys>).
 
 ```bash
-git clone https://github.com/anabraghim/chatbot-pagamentos.git
-cd chatbot-pagamentos
-npm install --prefix backend
-npm install --prefix mcp-server
-npm install --prefix frontend
-```
+# 1. Dependências dos três pacotes
+git clone https://github.com/anabraghim/chatbot-pagamentos.git && cd chatbot-pagamentos
+npm install --prefix backend && npm install --prefix mcp-server && npm install --prefix frontend
 
-### 2. Configure o `.env` do backend
-
-```bash
+# 2. Configuração
 cp backend/.env.example backend/.env
 ```
 
-Só o **`OPENROUTER_API_KEY`** precisa ser preenchido à mão — pegue uma chave gratuita em https://openrouter.ai/keys.
-
-As variáveis de banco (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) vêm com valores de exemplo e **funcionam como estão**, porque o `docker-compose.yml` e o backend leem esse mesmo arquivo: o container é criado com as credenciais que o backend vai usar para conectar. Se preferir nomes mais realistas, troque os três — só faça isso *antes* de subir o container, porque eles são gravados no volume na primeira subida.
-
-O backend valida tudo isso na subida (`src/data/env.ts`, com Zod) e **lança erro** se faltar ou estiver inválido.
-
-### 3. Suba o Postgres
+No `.env`, preencha à mão apenas **`OPENROUTER_API_KEY`** (sua chave) e **`JWT_SECRET`** (qualquer valor aleatório, ex.: `openssl rand -hex 32`). As credenciais de banco já vêm com valores de exemplo que funcionam: o `docker-compose.yml` e o backend leem o mesmo arquivo, então o container nasce com as credenciais que o backend vai usar. O backend valida tudo com Zod na subida e **lança erro** se faltar algo.
 
 ```bash
+# 3. Banco, tabelas e catálogo (dentro de backend/)
 cd backend
 docker compose up -d
-docker compose ps      # confira se o container subiu
-```
-
-### 4. Crie as tabelas e popule o banco (ainda em `backend/`)
-
-```bash
 npx drizzle-kit migrate
 npm run seed
-```
 
-Os dois comandos são obrigatórios. Sem eles o servidor até sobe, mas qualquer consulta falha (as tabelas não existem) e o catálogo fica vazio.
-
-O `seed` cria o usuário fixo de desenvolvimento — **sem ele nenhuma intenção pode ser registrada**, porque a FK `intentions.userId → users.id` recusa — e um catálogo de 3 produtos. É idempotente, pode rodar quantas vezes quiser.
-
-### 5. Rode o backend (em `backend/`)
-
-```bash
+# 4. Backend
 npm run dev
+
+# 5. Frontend, em outro terminal
+cd ../frontend && npm run dev
 ```
 
-Confira nos logs a linha:
+Os passos 3 e 4 são obrigatórios: sem eles o servidor sobe, mas as tabelas não existem e o catálogo fica vazio. O `seed` é idempotente e cria o catálogo mais um **usuário pronto para login: `demo@local` / `demo1234`** (limite R$ 5.000,00).
+
+Confira nos logs do backend a linha que confirma as tools no ar — o `mcp-server` **não** precisa ser rodado à parte:
 
 ```
 [mcp-server] listar_catalogo, registrar_intencao, realizar_compra prontos (stdio)
 ```
 
-O backend inicia o servidor MCP como processo filho via stdio — **não é preciso rodar o `mcp-server` separadamente.**
+Acesse <http://localhost:5173>. Para parar o banco: `docker compose down` (ou `down -v` para apagar os dados).
 
-### 6. Rode o frontend, em outro terminal
+### Variáveis de ambiente
 
-```bash
-cd chatbot-pagamentos/frontend
-npm run dev
-```
+Todas em `backend/.env`, validadas em [`src/data/env.ts`](backend/src/data/env.ts). O frontend não precisa de `.env` (usa `VITE_API_URL`, default `http://localhost:3000`).
 
-Acesse `http://localhost:5173` e pergunte algo como *"o que vocês têm à venda?"*.
+| Variável | Obrigatória | Descrição |
+|---|:---:|---|
+| `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME` | sim | Conexão com o Postgres. `DB_CONTAINER_PORT` é lida só pelo Docker Compose. |
+| `JWT_SECRET` | sim | Segredo de assinatura dos tokens (HS256). Trocar invalida os tokens já emitidos. |
+| `OPENROUTER_API_KEY` | sim | Chave da OpenRouter. |
+| `OPENROUTER_MODEL` | não | Modelo do agente. Default: `minimax/minimax-m3:free`. |
+| `PORT` | não | Porta do backend. Default: `3000`. |
 
-### Fluxo para testar
+---
 
-1. *"o que vocês têm à venda?"* → o agente chama `listar_catalogo`
-2. *"quero o item 3, uma unidade"* → chama `registrar_intencao` e pergunta o método de pagamento
-3. *"pode pagar no pix"* → chama `realizar_compra` e informa `transacao_id` e limite restante
+## Como usar
 
-### Se algo der errado
+| Passo | O que dizer | O que acontece |
+|---|---|---|
+| 1 | login `demo@local` / `demo1234` | O backend devolve um JWT e o chat abre. |
+| 2 | *"o que vocês têm à venda?"* | O agente chama `listar_catalogo`. |
+| 3 | *"quero o fone, uma unidade"* | Chama `registrar_intencao`, informa o `intencao_id` e o valor, e deixa claro que nada foi pago. |
+| 4 | *"pode pagar no pix"* | Chama `realizar_compra` e responde com o `transacao_id` e o limite restante. |
 
-| Sintoma | Causa provável |
+Todos os erros abaixo são recusados pelo backend e explicados pelo agente em linguagem natural:
+
+| Erro | Como reproduzir |
 |---|---|
-| Chat falha com erro de CORS | O CORS está fixo em `http://localhost:5173` (`backend/src/index.ts`). Se o Vite subiu em outra porta porque a 5173 estava ocupada, libere a porta ou ajuste o `origin`. |
-| `EADDRINUSE :::3000` | Já existe um backend rodando. Encerre o outro processo ou mude `PORT` no `.env`. |
-| `Invalid env: ...` na subida | Falta variável no `.env`, ou está com formato inválido. |
-| Consultas falham / catálogo vazio | Faltou rodar `npx drizzle-kit migrate` e `npm run seed`. |
-| O agente não chama nenhuma tool | O modelo gratuito pode estar rate-limited. Troque o `OPENROUTER_MODEL`. |
-
-### Parar o banco
-
-```bash
-docker compose down       # para o container, preserva os dados
-docker compose down -v    # para e APAGA o volume (recomeça do zero)
-```
+| `LIMITE_EXCEDIDO` | Crie uma conta em `/register` — nasce com limite de R$ 500,00 — e peça **2 teclados** (R$ 918,00). |
+| `INTENCAO_INVALIDA` | *"pague a intenção int_a1b2c3"* (id inventado). |
+| `INTENCAO_JA_PAGA` | Peça para pagar de novo uma intenção já concluída. |
+| `ESTOQUE_INSUFICIENTE` | Peça quantidade maior que o estoque do catálogo. |
+| `METODO_INVALIDO` | Insista em pagar de outra forma (ex.: *"quero pagar em boleto"*). |
 
 ---
 
-# Backend
+## Autenticação
 
-Node.js + TypeScript + Hono + PostgreSQL + Drizzle ORM. Hospeda o agente (OpenRouter) e o cliente MCP. Disponível em `http://localhost:3000`.
+JWT (HS256) com senha em bcrypt. `POST /chat` fica atrás do middleware `requireAuth`; no frontend, a rota `/chat` fica atrás de `<ProtectedRoute>` e um `401` dispara logout automático. Quem se cadastra nasce com limite de R$ 500,00.
 
-```bash
-npm run dev      # desenvolvimento (tsx watch, reinicia sozinho ao salvar)
-npm run build    # compila para dist/
-npm start        # roda a build de produção
-npm run seed     # usuário de desenvolvimento + catálogo inicial (idempotente)
+A identidade começa no token e chega ao banco sem passar em momento algum pelo modelo:
+
+```
+POST /auth/login → JWT
+  └→ requireAuth              valida o token          middleware/auth.ts
+       └→ c.get("userId")     identidade da request   routes/chat.ts
+            └→ runAgentLoop(messages, userId)         services/agent.ts
+                 └→ _meta do MCP { "payment-agent/userId": … }
+                      └→ extra._meta na tool          mcp-server/src/tools/
+                           └→ executePurchase({ userId })   services/purchase.ts
 ```
 
-As migrações são versionadas em `src/db/migrations/`, então `npx drizzle-kit migrate` basta. Só rode `npx drizzle-kit generate` se você **alterar** o schema em `src/db/schemas/`.
+**Por que no `_meta` e não como argumento:** assim a identidade não aparece no `inputSchema` e o modelo não consegue forjá-la. Um argumento comum também não serviria — o `inputSchema` é um `z.object` em modo *strip*, e uma chave não declarada seria descartada antes do handler.
 
-**Tabelas:** `users` (com `spendingLimit`), `products`, `intentions` (status `pendente` → `paga`, com `expiresAt`) e `transactions` (só compras aprovadas). O quanto o usuário já gastou **não** é uma coluna: é derivado somando as transações aprovadas.
+**O isolamento entre usuários é real:** [`purchase.ts`](backend/src/services/purchase.ts) busca a intenção por `id` **e** `userId` juntos, então a intenção de outro usuário é indistinguível de uma inexistente — as duas recusam com `INTENCAO_INVALIDA`.
+
+### API HTTP
+
+Base `http://localhost:3000`; CORS liberado para `http://localhost:5173`. 🔒 = exige `Authorization: Bearer <token>`.
+
+| Método | Rota | | Descrição |
+|---|---|:---:|---|
+| `POST` | `/auth/register` | | `name`, `email`, `password` (6+). → `{ token }` · 201. Duplicado → 409. |
+| `POST` | `/auth/login` | | `email`, `password`. → `{ token }` · 200. Inválido → 401. |
+| `GET` | `/auth/me` | 🔒 | `{ name, email, spendingLimit }`. |
+| `POST` | `/chat` | 🔒 | Recebe `{ messages }` com o histórico completo e devolve o histórico atualizado, já com as tool calls e seus resultados. |
+| `GET`/`POST` | `/products` `/products/:id` | | Catálogo por REST (rota auxiliar; o chat usa a tool MCP). |
+
+**Histórico completo a cada turno** é cumprido nas duas pontas: o frontend guarda a conversa inteira no estado e a **substitui** pelo array devolvido pelo backend; o backend reenvia tudo ao modelo, incluindo as mensagens `role: "tool"` com o resultado de cada chamada.
 
 ---
 
-# Servidor MCP
+## Tools MCP
 
-Pacote `mcp-server/`, uma tool por arquivo em `mcp-server/src/tools/`. Não roda sozinho em uso normal: o backend o inicia como processo filho (stdio) ao subir. Só precisa de `npm install` uma vez.
+Uma tool por arquivo em [`mcp-server/src/tools/`](mcp-server/src/tools/). O agente as descobre em runtime — nenhuma está codificada no backend.
 
-## `listar_catalogo`
+### `listar_catalogo`
 
-Lista os produtos do Postgres, com filtro opcional por categoria.
+Lista os produtos. Argumento opcional `categoria` (string).
+→ `{ produtos: [{ id, nome, preco, moeda, estoque }] }`
 
-| Argumento | Tipo | Obrigatório |
-|---|---|---|
-| `categoria` | string | não |
+### `registrar_intencao`
 
-Retorna `{ produtos: [{ id, nome, preco, moeda, estoque }] }`.
-
-## `registrar_intencao`
-
-Registra a intenção de compra de um item e devolve um identificador. **Nenhum dinheiro se move aqui.**
+Registra a intenção de compra e devolve um identificador. **Nenhum dinheiro se move aqui.**
 
 | Argumento | Tipo | Obrigatório |
-|---|---|---|
+|---|---|:---:|
 | `produto_id` | string | sim |
 | `quantidade` | number (int > 0) | sim |
 
-Retorna `{ intencao_id, produto_id, quantidade, valor_total, moeda, status: "pendente", expira_em }`.
+→ `{ intencao_id, produto_id, quantidade, valor_total, moeda, status: "pendente", expira_em }`
 
-Regras aplicadas no backend, não no prompt:
+`valor_total` é calculado no servidor a partir do preço do catálogo. A intenção nasce vinculada ao usuário da sessão e expira em **15 minutos**. Quantidade zero, negativa ou fracionada é barrada pelo schema da tool, antes do banco.
 
-- **O valor não é argumento.** `valor_total` é calculado no servidor a partir do preço do catálogo, então o modelo não consegue inventar nem alterar preço.
-- A intenção nasce vinculada ao usuário da sessão e expira em **15 minutos** (`INTENTION_TTL_MINUTES` em `tools/registrar-intencao.ts`).
-- A identidade do usuário viaja no `_meta` do MCP, fora dos argumentos da tool.
+### `realizar_compra`
 
-Recusas vêm no formato `{ status: "recusado", erro, mensagem }`:
-
-| Situação | Erro |
-|---|---|
-| Chamada sem identidade de usuário | `INTENCAO_INVALIDA` |
-| `produto_id` inexistente ou inventado pelo modelo | `PRODUTO_NAO_ENCONTRADO` |
-| Quantidade maior que o estoque | `ESTOQUE_INSUFICIENTE` |
-
-Quantidade zero, negativa ou fracionada é barrada pelo próprio schema da tool, antes de chegar ao banco.
-
-## `realizar_compra`
-
-Executa o pagamento a partir de uma intenção registrada. É aqui que o dinheiro se move.
+Executa o pagamento de uma intenção registrada. É aqui que o dinheiro se move.
 
 | Argumento | Tipo | Obrigatório |
-|---|---|---|
+|---|---|:---:|
 | `intencao_id` | string | sim |
 | `metodo_pagamento` | `"cartao"` \| `"pix"` | sim |
 
-Retorna `{ status: "aprovado", transacao_id, intencao_id, valor, metodo_pagamento, limite_restante, data }`.
+→ `{ status: "aprovado", transacao_id, intencao_id, valor, metodo_pagamento, limite_restante, data }`
 
-Regras aplicadas no backend, não no prompt:
+- **O valor não é argumento:** vem da intenção registrada.
+- `limite_restante` é **derivado** — `spendingLimit` menos a soma das transações aprovadas. Não há coluna de "gasto" para dessincronizar do histórico.
+- Tudo em **uma única transação de banco**: baixa da intenção, desconto de `products.stock` e gravação da transação. A intenção só é marcada como paga com `UPDATE ... WHERE status = 'pendente'`, o que fecha a corrida entre duas chamadas simultâneas.
+- A regra vive em [`services/purchase.ts`](backend/src/services/purchase.ts); a tool é um adaptador fino sobre ela.
 
-- **O valor não é argumento.** Ele vem da intenção registrada, então o modelo não consegue inventar nem alterar o preço da compra.
-- A intenção é buscada por `id` **e** `userId` ao mesmo tempo: uma intenção de outro usuário é indistinguível de uma inexistente, e as duas recusam com `INTENCAO_INVALIDA`.
-- `limite_restante` é **derivado**, não guardado: `users.spendingLimit` menos a soma das transações aprovadas. Não existe coluna de "gasto" para dessincronizar do histórico.
-- Tudo roda em uma única transação de banco: baixa da intenção, desconto de `products.stock` e gravação da transação. A intenção só é marcada como paga com `UPDATE ... WHERE status = 'pendente'`, o que fecha a corrida entre duas chamadas simultâneas.
-- A regra vive em `backend/src/services/purchase.ts` e a tool é um adaptador fino sobre ela — o backend é a fonte da verdade.
+### Recusas
 
-Recusas vêm no mesmo formato `{ status: "recusado", erro, mensagem }`:
+Sempre no formato `{ status: "recusado", erro, mensagem }` — a `mensagem` é o texto que o agente explica ao usuário.
 
-| Situação | Erro |
-|---|---|
-| Chamada sem identidade de usuário | `INTENCAO_INVALIDA` |
-| `intencao_id` inexistente ou inventado pelo modelo | `INTENCAO_INVALIDA` |
-| Intenção pertencente a outro usuário | `INTENCAO_INVALIDA` |
-| Intenção já utilizada em uma compra | `INTENCAO_JA_PAGA` |
-| Intenção fora do prazo de validade | `INTENCAO_EXPIRADA` |
-| Valor acima do limite disponível do usuário | `LIMITE_EXCEDIDO` |
-| `metodo_pagamento` diferente de `cartao` ou `pix` | `METODO_INVALIDO` |
-| Estoque mudou entre a intenção e o pagamento | `ESTOQUE_INSUFICIENTE` |
+| Situação | Erro | Tool |
+|---|---|---|
+| Chamada sem identidade de usuário | `INTENCAO_INVALIDA` | ambas |
+| `produto_id` inexistente ou inventado | `PRODUTO_NAO_ENCONTRADO` | `registrar_intencao` |
+| Quantidade acima do estoque (no registro ou no pagamento) | `ESTOQUE_INSUFICIENTE` | ambas |
+| `intencao_id` inexistente, inventado ou de outro usuário | `INTENCAO_INVALIDA` | `realizar_compra` |
+| Intenção já paga | `INTENCAO_JA_PAGA` | `realizar_compra` |
+| Intenção fora do prazo | `INTENCAO_EXPIRADA` | `realizar_compra` |
+| Valor acima do limite disponível | `LIMITE_EXCEDIDO` | `realizar_compra` |
+| Método diferente de `cartao` ou `pix` | `METODO_INVALIDO` | `realizar_compra` |
 
-`metodo_pagamento` é um `z.string()` validado no handler, e não um `z.enum`, de propósito: com um enum o SDK do MCP recusaria antes do handler e `METODO_INVALIDO` nunca voltaria no formato padrão de recusa.
+`metodo_pagamento` é um `z.string()` validado no handler, e não um `z.enum`, de propósito: com um enum o SDK recusaria antes do handler e `METODO_INVALIDO` nunca voltaria nesse formato padrão.
 
-> **Para ver o `LIMITE_EXCEDIDO`:** com o seed padrão ele não é alcançável em uma compra só — o limite é `5000` e o carrinho mais caro possível é Teclado × 5 = `2295`. Ou compre algumas vezes até acumular, ou baixe o limite direto no banco:
-> ```sql
-> UPDATE users SET "spendingLimit" = 500 WHERE email = 'demo@local';
-> ```
-> Mudar o valor no `seed.ts` **não** resolve: ele usa `onConflictDoNothing`, então não atualiza uma linha que já existe.
+### Testando as tools isoladamente
 
-## Testando as tools isoladamente
+A partir de `backend/`, para que o `.env` seja encontrado:
 
 ```bash
 npx @modelcontextprotocol/inspector npx tsx ../mcp-server/src/index.ts
 ```
 
-Execute a partir da pasta `backend/`, para que o `.env` seja encontrado.
-
-Atenção: o inspector **não envia o `_meta` de identidade**, então só `listar_catalogo` funciona por ali — `registrar_intencao` e `realizar_compra` respondem `INTENCAO_INVALIDA`. Isso é o comportamento correto (é a defesa contra chamadas fora do fluxo do usuário), não um bug. O caminho feliz precisa ser exercitado pelo chat, ou por um script que monte o `_meta` na mão.
+O inspector não envia o `_meta` de identidade, então só `listar_catalogo` funciona por ali — as outras respondem `INTENCAO_INVALIDA`. Esse é o comportamento correto (é a defesa contra chamadas fora do fluxo do usuário), não um bug.
 
 ---
 
-# Frontend
+## Modelo de dados
 
-App React (Vite + TypeScript) em `frontend/`, com um chat minimalista que conversa com `POST /chat` no backend.
+| Tabela | Colunas |
+|---|---|
+| `users` | `id`, `name`, `email` (unique), `passwordHash`, `spendingLimit` |
+| `products` | `id`, `name`, `price`, `currency`, `stock`, `category` |
+| `intentions` | `id`, `userId`, `productId`, `quantity`, `unitPrice`, `totalAmount`, `currency`, `status` (`pendente` → `paga`), `expiresAt`, `createdAt` |
+| `transactions` | `id`, `intentionId` (**unique**), `userId`, `amount`, `currency`, `paymentMethod`, `status`, `createdAt` |
 
-```bash
-cd frontend
-npm install
-npm run dev      # http://localhost:5173
-npm run lint     # oxlint
-```
+Duas invariantes sustentam as regras do desafio: **`transactions.intentionId` é `unique`**, o que garante `INTENCAO_JA_PAGA` no nível do banco; e **o gasto do usuário não é uma coluna**, é derivado das transações aprovadas — não há estado duplicado para dessincronizar. Só compra aprovada vira transação.
 
-Não precisa de `.env`: a URL do backend vem de `VITE_API_URL`, com default `http://localhost:3000`.
+---
 
-O frontend guarda o histórico inteiro da conversa no estado e **substitui** esse estado pelo array devolvido pelo backend a cada turno, incluindo as chamadas de ferramenta e seus resultados — é assim que o requisito de histórico completo é cumprido.
+## Solução de problemas
+
+| Sintoma | Causa provável |
+|---|---|
+| `Invalid env: ...` na subida | Falta variável no `.env` — as mais esquecidas são `JWT_SECRET` e `OPENROUTER_API_KEY`. |
+| `401` / logout logo após o login | Token assinado com outro `JWT_SECRET`. Limpe o `localStorage` e entre de novo. |
+| Consultas falham / catálogo vazio | Faltou `npx drizzle-kit migrate` e `npm run seed`. |
+| Migração falha em `ALTER TABLE "users"` | Banco de uma versão anterior com dados. Em desenvolvimento: `docker compose down -v` e refaça migrate + seed. |
+| Erro de CORS | O CORS está fixo em `http://localhost:5173` ([`index.ts`](backend/src/index.ts)). Se o Vite subiu em outra porta, libere a 5173 ou ajuste o `origin`. |
+| O agente não chama nenhuma tool | O modelo gratuito pode estar rate-limited. Troque o `OPENROUTER_MODEL`. |
+
+---
+
+## Limitações conhecidas
+
+Escopo consciente de um desafio local: o JWT é emitido **sem expiração**; `POST /products` **não exige autenticação**; não há **suíte de testes** automatizados; o CORS é fixo em localhost; o pagamento é **simulado** (não há provedor real por trás de `cartao` e `pix`); e o histórico da conversa vive no estado do frontend, perdido ao recarregar a página — intenções e transações, essas sim, ficam no banco.
+
+---
+
+## Modelo de LLM utilizado
+
+**[OpenRouter](https://openrouter.ai/)** com o modelo gratuito **`minimax/minimax-m3:free`**, configurável em `OPENROUTER_MODEL`. O agente usa o SDK `openai` (com `baseURL` da OpenRouter) e *tool calling* padrão.
+
+> Modelos gratuitos na OpenRouter mudam de disponibilidade com frequência. Se o padrão ficar indisponível ou rate-limited, aponte `OPENROUTER_MODEL` para outro modelo com suporte a *tool calling*.

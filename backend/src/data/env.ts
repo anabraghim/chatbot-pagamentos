@@ -11,9 +11,6 @@ const envSchema = z.object({
     JWT_SECRET: z.string().min(1),
     OPENROUTER_API_KEY: z.string().min(1),
     OPENROUTER_MODEL: z.string().min(1).default("minimax/minimax-m3:free"),
-    // Mantido por compatibilidade com o seed; não é mais usado no fluxo do chat
-    // agora que a identidade vem do JWT (ver src/routes/chat.ts).
-    DEMO_USER_ID: z.uuid().default("00000000-0000-0000-0000-000000000001"),
 })
 
 const parsed = envSchema.safeParse(process.env)

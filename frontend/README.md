@@ -1,32 +1,26 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Chat em React 19 + Vite + TypeScript, com login, cadastro e rota protegida. Roda em <http://localhost:5173> e conversa com o backend em `POST /chat`.
 
-Currently, two official plugins are available:
+> **Setup completo está no [README da raiz](../README.md).** O backend precisa estar rodando para o chat funcionar.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Scripts
 
-## React Compiler
+| Comando | O que faz |
+|---|---|
+| `npm run dev` | Servidor de desenvolvimento do Vite. |
+| `npm run build` | Type-check + build de produção. |
+| `npm run preview` | Serve a build localmente. |
+| `npm run lint` | oxlint. |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Configuração
 
-## Expanding the Oxlint configuration
+Não precisa de `.env`: a URL do backend vem de `VITE_API_URL`, com default `http://localhost:3000`.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Organização
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+- `src/lib/auth.tsx` — `AuthProvider`, `useAuth` e `ProtectedRoute`. O token JWT fica em `localStorage`.
+- `src/lib/api.ts` — chamadas ao backend; um `401` vira `UnauthorizedError` e dispara logout automático.
+- `src/pages/` — `LoginPage`, `RegisterPage` e `ChatPage`.
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+O `ChatPage` guarda o histórico inteiro da conversa no estado e o **substitui** pelo array devolvido pelo backend a cada turno, incluindo as chamadas de ferramenta e seus resultados — é assim que o requisito de histórico completo é cumprido. Ao criar uma tool nova, acrescente a legenda dela em `TOOL_LABELS`.

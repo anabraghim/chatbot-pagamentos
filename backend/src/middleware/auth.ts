@@ -15,8 +15,7 @@ export type AuthEnv = {
 //   Authorization: Bearer <token>
 //
 // Em caso de sucesso, deixa o id do usuário disponível para o handler
-// via c.get("userId") — é essa a linha que chat.ts passa a usar no
-// lugar do antigo env.DEMO_USER_ID.
+// via c.get("userId") — é daí que chat.ts tira a identidade da requisição.
 export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
     const verify = jwt({ secret: env.JWT_SECRET, alg: "HS256" })
     return verify(c, async () => {
