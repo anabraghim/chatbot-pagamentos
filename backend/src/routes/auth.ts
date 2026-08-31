@@ -3,11 +3,16 @@ import { sValidator } from "@hono/standard-validator"
 import { z } from "zod"
 import { sign } from "hono/jwt"
 import bcrypt from "bcryptjs"
-import { eq } from "drizzle-orm"
+import { and,eq, sum } from "drizzle-orm"
 import { db } from "../db/db.ts"
-import { UsersTable } from "../db/schema.ts"
+import { TransactionsTable, UsersTable } from "../db/schema.ts"
 import { env } from "../data/env.ts"
 import { requireAuth, type AuthEnv } from "../middleware/auth.ts"
+
+// Mesmo arredondamento de purchase.ts — evita mandar algo tipo 370.49999999999994 pro frontend.
+function money(value: number) {
+    return Math.round(value * 100) / 100
+}
 
 const registerSchema = z.object({
     name: z.string().min(1),
