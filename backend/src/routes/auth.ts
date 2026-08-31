@@ -27,9 +27,8 @@ const loginSchema = z.object({
 
 const app = new Hono<AuthEnv>()
 
-// Limite inicial dado a quem se cadastra pelo formulário. O usuário demo
-// do seed continua com 5000, pra não quebrar os testes de LIMITE_EXCEDIDO
-// documentados no README.
+// Limite inicial dado a quem se cadastra pelo formulário.
+
 const DEFAULT_SPENDING_LIMIT = 500
 
 app.post("/register", sValidator("json", registerSchema), async (c) => {
