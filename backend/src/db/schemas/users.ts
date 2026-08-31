@@ -4,5 +4,6 @@ export const UsersTable = pgTable("users", {
     id: uuid().primaryKey().defaultRandom(),
     name: text().notNull(),
     email: text().notNull().unique(),
+    passwordHash: text().notNull(),
     spendingLimit: numeric({ precision: 10, scale: 2, mode: "number" }).notNull()
 })
