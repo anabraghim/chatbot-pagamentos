@@ -129,6 +129,22 @@ Todos os erros abaixo são recusados pelo backend e explicados pelo agente em li
 
 ---
 
+## Capturas de tela dos fluxos
+
+Evidência dos caminhos de execução pedidos no desafio ([tabela acima](#requisitos-do-desafio-atendidos)), capturadas no chat real.
+
+| Caminho feliz — cartão | Caminho feliz — PIX |
+|---|---|
+| ![Compra aprovada pagando no cartão](screenshots/caminho-feliz-cartao.png) | ![Compra aprovada pagando no PIX](screenshots/caminho-feliz-pix.png) |
+| Registra a intenção e finaliza com `cartao`; resposta traz `transacao_id`, valor pago e `limite_restante`. | Mesmo fluxo pagando com `pix` — mesma tool, método diferente. |
+
+| Compra recusada — limite excedido | `intencao_id` inválido |
+|---|---|
+| ![Compra recusada por limite excedido](screenshots/compra-recusada-limite-excedido.png) | ![Recusa por id de intenção inventado](screenshots/id-invalido.png) |
+| `realizar_compra` recusa com `LIMITE_EXCEDIDO` quando o valor da intenção ultrapassa o limite disponível. | Pedir o pagamento de um `intencao_id` inventado (não registrado na conversa) é recusado com `INTENCAO_INVALIDA`. |
+
+---
+
 ## Autenticação
 
 JWT (HS256) com senha em bcrypt. `POST /chat` fica atrás do middleware `requireAuth`; no frontend, a rota `/chat` fica atrás de `<ProtectedRoute>` e um `401` dispara logout automático. Quem se cadastra nasce com limite de R$ 500,00.
