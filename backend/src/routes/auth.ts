@@ -3,11 +3,16 @@ import { sValidator } from "@hono/standard-validator"
 import { z } from "zod"
 import { sign } from "hono/jwt"
 import bcrypt from "bcryptjs"
-import { eq } from "drizzle-orm"
+import { and,eq, sum } from "drizzle-orm"
 import { db } from "../db/db.ts"
-import { UsersTable } from "../db/schema.ts"
+import { TransactionsTable, UsersTable } from "../db/schema.ts"
 import { env } from "../data/env.ts"
 import { requireAuth, type AuthEnv } from "../middleware/auth.ts"
+
+// Mesmo arredondamento de purchase.ts — evita mandar algo tipo 370.49999999999994 pro frontend.
+function money(value: number) {
+    return Math.round(value * 100) / 100
+}
 
 const registerSchema = z.object({
     name: z.string().min(1),
@@ -22,9 +27,8 @@ const loginSchema = z.object({
 
 const app = new Hono<AuthEnv>()
 
-// Limite inicial dado a quem se cadastra pelo formulário. O usuário demo
-// do seed continua com 5000, pra não quebrar os testes de LIMITE_EXCEDIDO
-// documentados no README.
+// Limite inicial dado a quem se cadastra pelo formulário.
+
 const DEFAULT_SPENDING_LIMIT = 500
 
 app.post("/register", sValidator("json", registerSchema), async (c) => {
@@ -72,7 +76,16 @@ app.get("/me", requireAuth, async (c) => {
         return c.json({ error: "Usuário não encontrado" }, 404)
     }
 
-    return c.json({ name: user.name, email: user.email, spendingLimit: user.spendingLimit })
+    // Mesma derivação de purchase.ts: spendingLimit é o teto fixo, o que muda é a
+    // soma das transações aprovadas.
+    const [spentRow] = await db
+        .select({ spent: sum(TransactionsTable.amount) })
+        .from(TransactionsTable)
+        .where(and(eq(TransactionsTable.userId, userId), eq(TransactionsTable.status, "aprovado")))
+
+    const remaining = money(user.spendingLimit - Number(spentRow?.spent ?? 0))
+
+    return c.json({ name: user.name, email: user.email, spendingLimit: remaining })
 })
 
 export default app
