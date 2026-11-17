@@ -1,0 +1,9 @@
+{
+  "app": "npx tsx infra/bin/app.ts",
+  "watch": { "include": ["**"], "exclude": ["node_modules", "cdk.out", "frontend", "backend", "mcp-server"] },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  }
+}

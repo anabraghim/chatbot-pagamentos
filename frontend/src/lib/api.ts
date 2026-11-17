@@ -1,57 +1,57 @@
-import type { ChatMessage } from "../types"
+import { fetchAuthSession } from "aws-amplify/auth"
+import type { ChatMessage, StreamEvent } from "../types"
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000"
+const API_URL = import.meta.env.VITE_API_URL as string
 
-function authHeaders(token: string) {
+// Lançada quando o API Gateway responde 401 (token ausente, inválido ou expirado).
+export class UnauthorizedError extends Error {}
+
+// O token do Cognito (ID token) é renovado automaticamente pelo Amplify quando expira.
+async function authHeader(): Promise<Record<string, string>> {
+    const session = await fetchAuthSession()
+    const token = session.tokens?.idToken?.toString()
+    if (!token) throw new UnauthorizedError()
     return { Authorization: `Bearer ${token}` }
 }
 
-export async function register(name: string, email: string, password: string): Promise<string> {
-    const res = await fetch(`${API_URL}/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error ?? "Não foi possível criar a conta.")
-    return data.token as string
-}
-
-export async function login(email: string, password: string): Promise<string> {
-    const res = await fetch(`${API_URL}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error ?? "E-mail ou senha inválidos.")
-    return data.token as string
-}
-
-export interface Profile {
-    name: string
-    email: string
-    spendingLimit: number
-}
-
-export async function fetchProfile(token: string): Promise<Profile> {
-    const res = await fetch(`${API_URL}/auth/me`, { headers: authHeaders(token) })
-    if (!res.ok) throw new Error("Não foi possível carregar o perfil.")
-    return res.json()
-}
-
-// Lançada quando o backend responde 401 — quem chama decide o que fazer
-// (no ChatPage, isso dispara o logout automático).
-export class UnauthorizedError extends Error {}
-
-export async function sendChat(messages: ChatMessage[], token: string): Promise<ChatMessage[]> {
-    const res = await fetch(`${API_URL}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ messages }),
-    })
+export async function fetchConversas(): Promise<ChatMessage[]> {
+    const res = await fetch(`${API_URL}/conversas`, { headers: await authHeader() })
     if (res.status === 401) throw new UnauthorizedError()
-    if (!res.ok) throw new Error(`Chat request failed: ${res.status}`)
+    if (!res.ok) throw new Error(`Falha ao carregar a conversa: ${res.status}`)
     const data = await res.json()
     return data.messages as ChatMessage[]
+}
+
+// Envia UMA mensagem; o histórico fica no servidor (DynamoDB). A resposta chega em streaming.
+export async function sendChat(message: string, onEvent: (event: StreamEvent) => void): Promise<void> {
+    const res = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeader()) },
+        body: JSON.stringify({ message }),
+    })
+    if (res.status === 401) throw new UnauthorizedError()
+    if (!res.ok || !res.body) throw new Error(`Falha na requisição: ${res.status}`)
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+
+    while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        // Cada evento SSE termina com uma linha em branco.
+        const partes = buffer.split("\n\n")
+        buffer = partes.pop() ?? ""
+        for (const parte of partes) {
+            const linha = parte.split("\n").find((l) => l.startsWith("data:"))
+            if (!linha) continue
+            try {
+                onEvent(JSON.parse(linha.slice(5).trim()) as StreamEvent)
+            } catch {
+                // linha incompleta ou inválida: ignora
+            }
+        }
+    }
 }
