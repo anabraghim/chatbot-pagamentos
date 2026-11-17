@@ -1,287 +1,155 @@
-# Chatbot de Pagamentos com Tools MCP
+# Chatbot de Pagamentos na AWS (Desafio 1 · Pagamentos Agênticos · Sprint 2)
 
-Chatbot que conversa com um LLM e executa compras (simuladas) através de ferramentas expostas via **MCP** (Model Context Protocol), com autenticação por JWT e limite de gasto validado no backend.
+Chatbot com login que conversa com um agente de IA e realiza compras simuladas (cartão ou Pix) por meio de três ferramentas. Na Fase 1 tudo rodava local (Ollama, Postgres, MCP por stdio); agora roda na AWS, com infraestrutura como código (AWS CDK).
 
-`Node.js` · `TypeScript` · `Hono` · `PostgreSQL` · `Drizzle ORM` · `React` · `Vite` · `MCP SDK` · `OpenRouter`
+As regras de negócio **não mudaram**: catálogo, intenção de compra, compra com cartão ou Pix, limite por usuário e validação da intenção.
 
-```
-Frontend (chat React)  →  Backend (auth · agente · cliente MCP)  →  Servidor MCP (3 tools)  →  PostgreSQL
-        JWT                          stdio
-```
+> O código da Fase 1 está preservado em [`fase1/`](fase1/) apenas como referência.
 
-O agente não decide nada sozinho: ele **descobre** as tools do servidor MCP em runtime e as chama, mas quem valida identidade, preço, estoque e limite é o backend. Duas regras sustentam isso:
-
-- **O valor nunca é argumento de tool.** É calculado no servidor a partir do catálogo, e `realizar_compra` lê o valor da intenção gravada — o modelo não inventa nem negocia preço.
-- **A identidade nunca é argumento de tool.** Viaja no `_meta` do MCP, então não aparece no `inputSchema` e o modelo sequer sabe que ela existe.
+**App publicado:** `https://COLE-AQUI-A-URL-DO-AMPLIFY`
 
 ---
 
-## Requisitos do desafio atendidos
+## 1. Arquitetura (como foi implementada)
 
-| Critério | Onde está no código |
-|---|---|
-| ✅ Frontend e backend rodando localmente | [`frontend/`](frontend/) · [`backend/`](backend/) |
-| ✅ Login funcionando; chat inacessível sem autenticação | [`routes/auth.ts`](backend/src/routes/auth.ts) · [`middleware/auth.ts`](backend/src/middleware/auth.ts) · [`lib/auth.tsx`](frontend/src/lib/auth.tsx) |
-| ✅ Servidor MCP com as 3 tools, descobertas pelo agente | [`mcp-server/src/tools/`](mcp-server/src/tools/) · `client.listTools()` em [`agent.ts`](backend/src/services/agent.ts) |
-| ✅ Tools respeitam os contratos de argumentos e retorno | [ver contratos](#tools-mcp) |
-| ✅ Compra concluída com `cartao` e com `pix` | `PAYMENT_METHODS` em [`purchase.ts`](backend/src/services/purchase.ts) |
-| ✅ `realizar_compra` exige `intencao_id` válido e recusa id inventado | guard de uuid em [`realizar-compra.ts`](mcp-server/src/tools/realizar-compra.ts) + busca por `id` **e** `userId` em [`purchase.ts`](backend/src/services/purchase.ts) |
-| ✅ Tentativa acima do limite retorna erro, explicado pelo agente | `LIMITE_EXCEDIDO` em [`purchase.ts`](backend/src/services/purchase.ts) |
-| ✅ Limite armazenado e validado no backend | coluna `users.spendingLimit` |
-| ✅ Histórico completo enviado ao modelo a cada turno | [`agent.ts`](backend/src/services/agent.ts) · [`ChatPage.tsx`](frontend/src/pages/ChatPage.tsx) |
-| ✅ README com instruções de execução e modelo usado | este arquivo |
-
-Além do mínimo pedido: expiração de intenção, estoque insuficiente, método de pagamento inválido, corrida entre dois pagamentos simultâneos da mesma intenção e isolamento entre usuários.
-
----
-
-## Estrutura
-
-Não existe `package.json` na raiz: são **três pacotes npm independentes**.
-
-```
-backend/      API, autenticação, loop do agente e cliente MCP  ·  :3000
-mcp-server/   as 3 tools MCP  ·  iniciado pelo backend por stdio, não roda sozinho
-frontend/     chat React com login e rota protegida  ·  :5173
+```mermaid
+flowchart TD
+    U[Usuário no navegador] -->|login SRP| COG[Amazon Cognito<br/>User Pool · só convite]
+    U -->|HTTPS + Authorization: Bearer JWT| APIGW[API Gateway REST<br/>POST /chat · GET /conversas<br/>streaming de resposta]
+    APIGW -->|valida JWT · 401 se inválido| AUTH[Lambda authorizer<br/>aws-jwt-verify]
+    APIGW --> CHAT[Lambda do chat<br/>usuario_id = sub do token]
+    APIGW --> CONV[Lambda GET /conversas]
+    CHAT -->|histórico| DDBC[(DynamoDB<br/>Conversations)]
+    CONV --> DDBC
+    CHAT -->|InvokeAgentRuntime · SSE| AGENT[Agente Strands<br/>Bedrock AgentCore Runtime]
+    AGENT -->|Converse| BED[Amazon Bedrock<br/>Claude Haiku 4.5]
+    AGENT -->|lambda:Invoke| T1[Lambda listar_catalogo]
+    AGENT -->|lambda:Invoke| T2[Lambda registrar_intencao]
+    AGENT -->|lambda:Invoke| T3[Lambda realizar_compra]
+    T1 --> P[(Products)]
+    T2 --> P
+    T2 --> I[(Intentions)]
+    T3 --> I
+    T3 --> P
+    T3 --> US[(Users)]
+    T3 --> TR[(Transactions)]
+    AMP[AWS Amplify Hosting<br/>frontend React] --> U
 ```
 
-| Camada | Escolha | Por quê |
-|---|---|---|
-| API | Hono | Leve, com JWT embutido (`hono/jwt`) e tipagem de contexto (`c.get("userId")`). |
-| Banco | PostgreSQL + Drizzle | Migrações versionadas e transações reais — necessárias para a atomicidade do pagamento. |
-| Agente | SDK `openai` → OpenRouter | Modelos gratuitos com *tool calling* padrão. |
-| Tools | MCP SDK via stdio | Processo separado com contrato próprio, iniciado pelo backend — não há serviço extra para subir. |
-| Frontend | React 19 + Vite + React Router | Chat minimalista; o histórico é o próprio estado da página. |
+**Variação em relação ao desenho de referência (justificada):**
 
----
+- **API Gateway REST (e não HTTP API).** O desafio exige resposta em *stream* ou WebSocket. O streaming de resposta do API Gateway só existe para REST APIs (`responseTransferMode: STREAM`), não para HTTP APIs.
+- **Lambda authorizer com `aws-jwt-verify` (em vez do authorizer nativo do Cognito).** Valida o JWT do Cognito (assinatura, expiração, emissor e client) e aceita exatamente o formato `Authorization: Bearer <token>` pedido no enunciado. Sem token, ou com formato inválido, o próprio API Gateway responde 401 (`validationRegex`); com token inválido/expirado o authorizer nega e o gateway responde 401. Nada disso chega à Lambda do chat.
+- As tools são Lambdas chamadas diretamente pelo agente (`lambda:InvokeFunction`), sem AgentCore Gateway (extra opcional).
 
-## Como rodar
+Estrutura do repositório:
 
-**Pré-requisitos:** Node.js 20+, Docker (com Compose ativo) e uma chave gratuita da OpenRouter (<https://openrouter.ai/keys>).
+```
+frontend/   React + Vite, Amplify Auth (Authenticator com hideSignUp), consome o stream
+api/        Lambdas da API: authorizer, chat (streaming), conversas
+agent/      Agente Strands (Python) implantado no AgentCore Runtime
+tools/      Lambdas das 3 ferramentas (listar_catalogo, registrar_intencao, realizar_compra)
+infra/      AWS CDK (TypeScript): Cognito, DynamoDB, Lambdas, API Gateway, AgentCore, IAM
+fase1/      Código da Fase 1 (referência)
+```
+
+## 2. Deploy passo a passo
+
+### Pré-requisitos
+
+- Conta AWS com usuário/perfil IAM para deploy (não use a conta root) e **alerta no AWS Budgets** criado antes do primeiro deploy.
+- Região **us-east-1** para tudo.
+- Acesso ao modelo no Amazon Bedrock confirmado em us-east-1 (testar no Playground).
+- Node.js 22+, Python 3.12+ com `pip` (para empacotar o agente em ARM64), AWS CLI v2 configurada (`aws configure` ou `aws configure sso`), Git.
+
+### Passos
 
 ```bash
-# 1. Dependências dos três pacotes
-git clone https://github.com/anabraghim/chatbot-pagamentos.git && cd chatbot-pagamentos
-npm install --prefix backend && npm install --prefix mcp-server && npm install --prefix frontend
+# 1) Dependências da infraestrutura e das Lambdas
+npm ci
 
-# 2. Configuração
-cp backend/.env.example backend/.env
+# 2) Bootstrap do CDK (uma vez por conta/região)
+npx cdk bootstrap aws://SEU_ACCOUNT_ID/us-east-1
+
+# 3) Primeiro deploy (CORS temporário para localhost)
+npx cdk deploy
+
+# 4) Crie o app no Amplify (console) conectando este repositório, pasta raiz "frontend"
+#    -> anote a URL, ex.: https://main.d1a2b3c4d5.amplifyapp.com
+
+# 5) Redeploy restringindo o CORS à origem do Amplify
+npx cdk deploy -c frontendOrigin=https://main.d1a2b3c4d5.amplifyapp.com
+
+# 6) No Amplify: Hosting > Environment variables, cadastre as saídas do deploy:
+#    VITE_API_URL, VITE_USER_POOL_ID, VITE_USER_POOL_CLIENT_ID  -> redeploy do front
+
+# 7) Crie usuários (cadastro só por convite)
+aws cognito-idp admin-create-user --region us-east-1 \
+  --user-pool-id <UserPoolId> --username email@exemplo.com \
+  --user-attributes Name=email,Value=email@exemplo.com Name=email_verified,Value=true \
+  --desired-delivery-mediums EMAIL
 ```
 
-No `.env`, preencha à mão apenas **`OPENROUTER_API_KEY`** (sua chave) e **`JWT_SECRET`** (qualquer valor aleatório, ex.: `openssl rand -hex 32`). As credenciais de banco já vêm com valores de exemplo que funcionam: o `docker-compose.yml` e o backend leem o mesmo arquivo, então o container nasce com as credenciais que o backend vai usar. O backend valida tudo com Zod na subida e **lança erro** se faltar algo.
+Detalhes e solução de problemas: ver o guia que acompanha o projeto.
+
+## 3. Modelo do Bedrock
+
+**Claude Haiku 4.5**, pelo perfil de inferência geo-US `us.anthropic.claude-haiku-4-5` (em us-east-1 o modelo só está disponível via perfil de inferência entre regiões). É o modelo recomendado no enunciado: baixo custo, baixa latência e bom desempenho em *tool calling*. Pode ser trocado sem editar código: `npx cdk deploy -c modelId=<id-do-perfil>`.
+
+## 4. Modelagem do DynamoDB
+
+Todas as tabelas são on-demand (`PAY_PER_REQUEST`). Dinheiro é guardado em **centavos (inteiro)** para evitar erro de ponto flutuante.
+
+| Tabela | Chave | O que guarda |
+|---|---|---|
+| `Users` | PK `userId` (= `sub` do Cognito) | `availableLimitCents` (limite disponível), `createdAt`. Criado na primeira compra, com limite padrão de R$ 5.000,00. |
+| `Conversations` | PK `userId`, SK `conversationId` (`default`) | `messagesJson` (histórico completo no formato do Strands/Converse, incluindo chamadas de ferramenta), `updatedAt`. |
+| `Products` | PK `productId` | `name`, `priceCents`, `currency`, `stock`, `category`. Catálogo inicial gravado pelo CDK. |
+| `Intentions` | PK `intentionId` | `userId`, `productId`, `quantity`, `unitPriceCents`, `totalCents`, `currency`, `status` (`pendente`/`paga`), `expiresAt` (epoch ms), `createdAt`, `paidAt`, `paymentMethod`. |
+| `Transactions` | PK `intentionId` | `transactionId`, `userId`, `amountCents`, `currency`, `paymentMethod`, `status`, `createdAt`. A chave ser o `intentionId` garante **no máximo uma transação por intenção**. |
+
+**Sem duplicidade (escritas condicionais).** `realizar_compra` faz uma única `TransactWriteItems` (tudo ou nada) com 4 operações condicionais: (0) intenção só vira `paga` se estiver `pendente`, for do usuário e não tiver expirado; (1) o limite só é debitado se `availableLimitCents >= valor`; (2) o estoque só baixa se `stock >= quantidade`; (3) a transação só é criada se ainda não existir para aquela intenção. Se a mesma chamada chegar duas vezes (inclusive em paralelo), só uma efetiva; a outra recebe `INTENCAO_JA_PAGA`.
+
+**Limites conhecidos:** a conversa de cada usuário é um único item (máx. 400 KB; acima de ~300 KB os turnos mais antigos são descartados). O catálogo usa `Scan` (adequado para poucos produtos).
+
+## 5. Permissões IAM (menor privilégio)
+
+| Role | Pode | Não pode |
+|---|---|---|
+| Lambda do chat | `bedrock-agentcore:InvokeAgentRuntime` **só neste runtime**; `GetItem`/`PutItem` **só em Conversations** | Bedrock; tabelas Intentions/Transactions/Users/Products |
+| Lambda `GET /conversas` | `GetItem` só em Conversations | Qualquer outra coisa |
+| Lambda authorizer | Apenas logs (política gerenciada `AWSLambdaBasicExecutionRole`) | Acesso a dados |
+| Runtime do AgentCore | `bedrock:InvokeModel*` **só no modelo escolhido** (perfil + modelo base nas 3 regiões do perfil US); `lambda:InvokeFunction` **só nas 3 tools**; logs/métricas do runtime e leitura do pacote de código (adicionados pelo construct L2 do CDK) | Acesso direto às tabelas |
+| `listar_catalogo` | `Scan` em Products | Escrita; outras tabelas |
+| `registrar_intencao` | `GetItem` em Products; `PutItem` em Intentions | Outras tabelas/ações |
+| `realizar_compra` | `GetItem`/`UpdateItem` em Intentions e Products; `GetItem`/`PutItem`/`UpdateItem` em Users; `PutItem` em Transactions | Qualquer ação fora dessas |
+
+Nenhuma política usa `Action: "*"` com `Resource: "*"` nem políticas gerenciadas amplas. Exceções documentadas: as ações `xray:*` e `cloudwatch:PutMetricData` que o construct L2 do AgentCore acrescenta à role do runtime não aceitam permissão por recurso (exigem `*`), mas são ações específicas de telemetria. A origem dessas regras está em [`infra/lib/backend-stack.ts`](infra/lib/backend-stack.ts).
+
+**Regras de segurança preservadas:** o `usuario_id` vem do `sub` do token validado (nunca do corpo da requisição nem de argumento do modelo; é injetado dentro das funções de ferramenta do agente); o valor da compra vem da intenção gravada; `realizar_compra` só aceita intenções do próprio usuário, ainda não pagas e não expiradas.
+
+## 6. Evidências
+
+> Substitua pelos seus prints/vídeo (pasta `docs/evidencias/`).
+
+- Login: `docs/evidencias/login.png`
+- Chamada sem token rejeitada com 401: `docs/evidencias/401.png`
+- Compra com cartão: `docs/evidencias/compra-cartao.png`
+- Compra com Pix: `docs/evidencias/compra-pix.png`
+- Tentativa bloqueada por limite excedido: `docs/evidencias/limite-excedido.png`
+- Tentativa com `intencao_id` inválido: `docs/evidencias/id-invalido.png`
+
+## 7. Como remover todos os recursos
 
 ```bash
-# 3. Banco, tabelas e catálogo (dentro de backend/)
-cd backend
-docker compose up -d
-npx drizzle-kit migrate
-npm run seed
+# 1) Backend (API Gateway, Lambdas, tabelas, Cognito, runtime do AgentCore, roles)
+npx cdk destroy
 
-# 4. Backend
-npm run dev
+# 2) Frontend: Console AWS > AWS Amplify > seu app > App settings > General settings > Delete app
 
-# 5. Frontend, em outro terminal
-cd ../frontend && npm run dev
+# 3) Resíduos fora da stack: confira e apague no console
+#    - CloudWatch > Logs > Log groups: /aws/bedrock-agentcore/runtimes/*  e /aws/lambda/*
+#    - S3: bucket de assets do CDK (cdk-hnb659fds-assets-...) -> esvazie e apague (ou delete a stack "CDKToolkit" por último)
+#    - ECR: o bootstrap cria o repositório de imagens do CDK (cdk-hnb659fds-container-assets-...); apague se existir
+#    - Budgets: remova o alerta se não for mais necessário
 ```
-
-Os passos 3 e 4 são obrigatórios: sem eles o servidor sobe, mas as tabelas não existem e o catálogo fica vazio. O `seed` é idempotente e cria o catálogo mais um **usuário pronto para login: `demo@local` / `demo1234`** (limite R$ 5.000,00).
-
-Confira nos logs do backend a linha que confirma as tools no ar — o `mcp-server` **não** precisa ser rodado à parte:
-
-```
-[mcp-server] listar_catalogo, registrar_intencao, realizar_compra prontos (stdio)
-```
-
-Acesse <http://localhost:5173>. Para parar o banco: `docker compose down` (ou `down -v` para apagar os dados).
-
-### Variáveis de ambiente
-
-Todas em `backend/.env`, validadas em [`src/data/env.ts`](backend/src/data/env.ts). O frontend não precisa de `.env` (usa `VITE_API_URL`, default `http://localhost:3000`).
-
-| Variável | Obrigatória | Descrição |
-|---|:---:|---|
-| `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME` | sim | Conexão com o Postgres. `DB_CONTAINER_PORT` é lida só pelo Docker Compose. |
-| `JWT_SECRET` | sim | Segredo de assinatura dos tokens (HS256). Trocar invalida os tokens já emitidos. |
-| `OPENROUTER_API_KEY` | sim | Chave da OpenRouter. |
-| `OPENROUTER_MODEL` | não | Modelo do agente. Default: `minimax/minimax-m3:free`. |
-| `PORT` | não | Porta do backend. Default: `3000`. |
-
----
-
-## Como usar
-
-| Passo | O que dizer | O que acontece |
-|---|---|---|
-| 1 | login `demo@local` / `demo1234` | O backend devolve um JWT e o chat abre. |
-| 2 | *"o que vocês têm à venda?"* | O agente chama `listar_catalogo`. |
-| 3 | *"quero o fone, uma unidade"* | Chama `registrar_intencao`, informa o `intencao_id` e o valor, e deixa claro que nada foi pago. |
-| 4 | *"pode pagar no pix"* | Chama `realizar_compra` e responde com o `transacao_id` e o limite restante. |
-
-Todos os erros abaixo são recusados pelo backend e explicados pelo agente em linguagem natural:
-
-| Erro | Como reproduzir |
-|---|---|
-| `LIMITE_EXCEDIDO` | Crie uma conta em `/register` — nasce com limite de R$ 500,00 — e peça **2 teclados** (R$ 918,00). |
-| `INTENCAO_INVALIDA` | *"pague a intenção int_a1b2c3"* (id inventado). |
-| `INTENCAO_JA_PAGA` | Peça para pagar de novo uma intenção já concluída. |
-| `ESTOQUE_INSUFICIENTE` | Peça quantidade maior que o estoque do catálogo. |
-| `METODO_INVALIDO` | Insista em pagar de outra forma (ex.: *"quero pagar em boleto"*). |
-
----
-
-## Capturas de tela dos fluxos
-
-Evidência dos caminhos de execução pedidos no desafio ([tabela acima](#requisitos-do-desafio-atendidos)), capturadas no chat real.
-
-| Caminho feliz — cartão | Caminho feliz — PIX |
-|---|---|
-| ![Compra aprovada pagando no cartão](screenshots/caminho-feliz-cartao.png) | ![Compra aprovada pagando no PIX](screenshots/caminho-feliz-pix.png) |
-| Registra a intenção e finaliza com `cartao`; resposta traz `transacao_id`, valor pago e `limite_restante`. | Mesmo fluxo pagando com `pix` — mesma tool, método diferente. |
-
-| Compra recusada — limite excedido | `intencao_id` inválido |
-|---|---|
-| ![Compra recusada por limite excedido](screenshots/compra-recusada-limite-excedido.png) | ![Recusa por id de intenção inventado](screenshots/id-invalido.png) |
-| `realizar_compra` recusa com `LIMITE_EXCEDIDO` quando o valor da intenção ultrapassa o limite disponível. | Pedir o pagamento de um `intencao_id` inventado (não registrado na conversa) é recusado com `INTENCAO_INVALIDA`. |
-
----
-
-## Autenticação
-
-JWT (HS256) com senha em bcrypt. `POST /chat` fica atrás do middleware `requireAuth`; no frontend, a rota `/chat` fica atrás de `<ProtectedRoute>` e um `401` dispara logout automático. Quem se cadastra nasce com limite de R$ 500,00.
-
-A identidade começa no token e chega ao banco sem passar em momento algum pelo modelo:
-
-```
-POST /auth/login → JWT
-  └→ requireAuth              valida o token          middleware/auth.ts
-       └→ c.get("userId")     identidade da request   routes/chat.ts
-            └→ runAgentLoop(messages, userId)         services/agent.ts
-                 └→ _meta do MCP { "payment-agent/userId": … }
-                      └→ extra._meta na tool          mcp-server/src/tools/
-                           └→ executePurchase({ userId })   services/purchase.ts
-```
-
-**Por que no `_meta` e não como argumento:** assim a identidade não aparece no `inputSchema` e o modelo não consegue forjá-la. Um argumento comum também não serviria — o `inputSchema` é um `z.object` em modo *strip*, e uma chave não declarada seria descartada antes do handler.
-
-**O isolamento entre usuários é real:** [`purchase.ts`](backend/src/services/purchase.ts) busca a intenção por `id` **e** `userId` juntos, então a intenção de outro usuário é indistinguível de uma inexistente — as duas recusam com `INTENCAO_INVALIDA`.
-
-### API HTTP
-
-Base `http://localhost:3000`; CORS liberado para `http://localhost:5173`. 🔒 = exige `Authorization: Bearer <token>`.
-
-| Método | Rota | | Descrição |
-|---|---|:---:|---|
-| `POST` | `/auth/register` | | `name`, `email`, `password` (6+). → `{ token }` · 201. Duplicado → 409. |
-| `POST` | `/auth/login` | | `email`, `password`. → `{ token }` · 200. Inválido → 401. |
-| `GET` | `/auth/me` | 🔒 | `{ name, email, spendingLimit }`. |
-| `POST` | `/chat` | 🔒 | Recebe `{ messages }` com o histórico completo e devolve o histórico atualizado, já com as tool calls e seus resultados. |
-| `GET`/`POST` | `/products` `/products/:id` | | Catálogo por REST (rota auxiliar; o chat usa a tool MCP). |
-
-**Histórico completo a cada turno** é cumprido nas duas pontas: o frontend guarda a conversa inteira no estado e a **substitui** pelo array devolvido pelo backend; o backend reenvia tudo ao modelo, incluindo as mensagens `role: "tool"` com o resultado de cada chamada.
-
----
-
-## Tools MCP
-
-Uma tool por arquivo em [`mcp-server/src/tools/`](mcp-server/src/tools/). O agente as descobre em runtime — nenhuma está codificada no backend.
-
-### `listar_catalogo`
-
-Lista os produtos. Argumento opcional `categoria` (string).
-→ `{ produtos: [{ id, nome, preco, moeda, estoque }] }`
-
-### `registrar_intencao`
-
-Registra a intenção de compra e devolve um identificador. **Nenhum dinheiro se move aqui.**
-
-| Argumento | Tipo | Obrigatório |
-|---|---|:---:|
-| `produto_id` | string | sim |
-| `quantidade` | number (int > 0) | sim |
-
-→ `{ intencao_id, produto_id, quantidade, valor_total, moeda, status: "pendente", expira_em }`
-
-`valor_total` é calculado no servidor a partir do preço do catálogo. A intenção nasce vinculada ao usuário da sessão e expira em **15 minutos**. Quantidade zero, negativa ou fracionada é barrada pelo schema da tool, antes do banco.
-
-### `realizar_compra`
-
-Executa o pagamento de uma intenção registrada. É aqui que o dinheiro se move.
-
-| Argumento | Tipo | Obrigatório |
-|---|---|:---:|
-| `intencao_id` | string | sim |
-| `metodo_pagamento` | `"cartao"` \| `"pix"` | sim |
-
-→ `{ status: "aprovado", transacao_id, intencao_id, valor, metodo_pagamento, limite_restante, data }`
-
-- **O valor não é argumento:** vem da intenção registrada.
-- `limite_restante` é **derivado** — `spendingLimit` menos a soma das transações aprovadas. Não há coluna de "gasto" para dessincronizar do histórico.
-- Tudo em **uma única transação de banco**: baixa da intenção, desconto de `products.stock` e gravação da transação. A intenção só é marcada como paga com `UPDATE ... WHERE status = 'pendente'`, o que fecha a corrida entre duas chamadas simultâneas.
-- A regra vive em [`services/purchase.ts`](backend/src/services/purchase.ts); a tool é um adaptador fino sobre ela.
-
-### Recusas
-
-Sempre no formato `{ status: "recusado", erro, mensagem }` — a `mensagem` é o texto que o agente explica ao usuário.
-
-| Situação | Erro | Tool |
-|---|---|---|
-| Chamada sem identidade de usuário | `INTENCAO_INVALIDA` | ambas |
-| `produto_id` inexistente ou inventado | `PRODUTO_NAO_ENCONTRADO` | `registrar_intencao` |
-| Quantidade acima do estoque (no registro ou no pagamento) | `ESTOQUE_INSUFICIENTE` | ambas |
-| `intencao_id` inexistente, inventado ou de outro usuário | `INTENCAO_INVALIDA` | `realizar_compra` |
-| Intenção já paga | `INTENCAO_JA_PAGA` | `realizar_compra` |
-| Intenção fora do prazo | `INTENCAO_EXPIRADA` | `realizar_compra` |
-| Valor acima do limite disponível | `LIMITE_EXCEDIDO` | `realizar_compra` |
-| Método diferente de `cartao` ou `pix` | `METODO_INVALIDO` | `realizar_compra` |
-
-`metodo_pagamento` é um `z.string()` validado no handler, e não um `z.enum`, de propósito: com um enum o SDK recusaria antes do handler e `METODO_INVALIDO` nunca voltaria nesse formato padrão.
-
-### Testando as tools isoladamente
-
-A partir de `backend/`, para que o `.env` seja encontrado:
-
-```bash
-npx @modelcontextprotocol/inspector npx tsx ../mcp-server/src/index.ts
-```
-
-O inspector não envia o `_meta` de identidade, então só `listar_catalogo` funciona por ali — as outras respondem `INTENCAO_INVALIDA`. Esse é o comportamento correto (é a defesa contra chamadas fora do fluxo do usuário), não um bug.
-
----
-
-## Modelo de dados
-
-| Tabela | Colunas |
-|---|---|
-| `users` | `id`, `name`, `email` (unique), `passwordHash`, `spendingLimit` |
-| `products` | `id`, `name`, `price`, `currency`, `stock`, `category` |
-| `intentions` | `id`, `userId`, `productId`, `quantity`, `unitPrice`, `totalAmount`, `currency`, `status` (`pendente` → `paga`), `expiresAt`, `createdAt` |
-| `transactions` | `id`, `intentionId` (**unique**), `userId`, `amount`, `currency`, `paymentMethod`, `status`, `createdAt` |
-
-Duas invariantes sustentam as regras do desafio: **`transactions.intentionId` é `unique`**, o que garante `INTENCAO_JA_PAGA` no nível do banco; e **o gasto do usuário não é uma coluna**, é derivado das transações aprovadas — não há estado duplicado para dessincronizar. Só compra aprovada vira transação.
-
----
-
-## Solução de problemas
-
-| Sintoma | Causa provável |
-|---|---|
-| `Invalid env: ...` na subida | Falta variável no `.env` — as mais esquecidas são `JWT_SECRET` e `OPENROUTER_API_KEY`. |
-| `401` / logout logo após o login | Token assinado com outro `JWT_SECRET`. Limpe o `localStorage` e entre de novo. |
-| Consultas falham / catálogo vazio | Faltou `npx drizzle-kit migrate` e `npm run seed`. |
-| Migração falha em `ALTER TABLE "users"` | Banco de uma versão anterior com dados. Em desenvolvimento: `docker compose down -v` e refaça migrate + seed. |
-| Erro de CORS | O CORS está fixo em `http://localhost:5173` ([`index.ts`](backend/src/index.ts)). Se o Vite subiu em outra porta, libere a 5173 ou ajuste o `origin`. |
-| O agente não chama nenhuma tool | O modelo gratuito pode estar rate-limited. Troque o `OPENROUTER_MODEL`. |
-
----
-
-## Limitações conhecidas
-
-Escopo consciente de um desafio local: o JWT é emitido **sem expiração**; `POST /products` **não exige autenticação**; não há **suíte de testes** automatizados; o CORS é fixo em localhost; o pagamento é **simulado** (não há provedor real por trás de `cartao` e `pix`); e o histórico da conversa vive no estado do frontend, perdido ao recarregar a página — intenções e transações, essas sim, ficam no banco.
-
----
-
-## Modelo de LLM utilizado
-
-**[OpenRouter](https://openrouter.ai/)** com o modelo gratuito **`minimax/minimax-m3:free`**, configurável em `OPENROUTER_MODEL`. O agente usa o SDK `openai` (com `baseURL` da OpenRouter) e *tool calling* padrão.
-
-> Modelos gratuitos na OpenRouter mudam de disponibilidade com frequência. Se o padrão ficar indisponível ou rate-limited, aponte `OPENROUTER_MODEL` para outro modelo com suporte a *tool calling*.

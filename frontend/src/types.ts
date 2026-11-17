@@ -1,15 +1,13 @@
-export type ChatRole = "user" | "assistant" | "tool"
-
-export interface ToolCall {
-    id: string
-    type: "function"
-    function: { name: string; arguments: string }
-}
+export type ChatRole = "user" | "assistant"
 
 export interface ChatMessage {
     role: ChatRole
-    content?: string | null
-    tool_calls?: ToolCall[]
-    tool_call_id?: string
-    name?: string
+    content: string
 }
+
+// Eventos que a API envia em streaming (Server-Sent Events).
+export type StreamEvent =
+    | { type: "text"; data: string }
+    | { type: "tool"; name: string }
+    | { type: "error"; message: string }
+    | { type: "done" }

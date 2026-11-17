@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { fetchProfile, sendChat, UnauthorizedError, type Profile } from "../lib/api"
-import { useAuth } from "../lib/auth"
-import type { ChatMessage, ToolCall } from "../types"
+import { fetchConversas, sendChat, UnauthorizedError } from "../lib/api"
+import type { ChatMessage, StreamEvent } from "../types"
 import "./Chat.css"
 
 const TOOL_LABELS: Record<string, string> = {
@@ -12,52 +11,71 @@ const TOOL_LABELS: Record<string, string> = {
     realizar_compra: "processando pagamento…",
 }
 
-function toolCallLabel(toolCalls: ToolCall[]) {
-    const labels = toolCalls.map((call) => TOOL_LABELS[call.function.name] ?? `executando ${call.function.name}…`)
-    return `🔧 ${[...new Set(labels)].join(" ")}`
+interface Props {
+    onSignOut: () => void
 }
 
-function ChatPage() {
-    const { token, logout } = useAuth()
+function ChatPage({ onSignOut }: Props) {
     const [messages, setMessages] = useState<ChatMessage[]>([])
     const [input, setInput] = useState("")
     const [loading, setLoading] = useState(false)
-    const [profile, setProfile] = useState<Profile | null>(null)
+    const [toolLabel, setToolLabel] = useState<string | null>(null)
+    const bottomRef = useRef<HTMLDivElement>(null)
+
+    // Carrega o histórico salvo no servidor (GET /conversas).
+    useEffect(() => {
+        fetchConversas()
+            .then(setMessages)
+            .catch((err) => {
+                if (err instanceof UnauthorizedError) onSignOut()
+            })
+    }, [])
 
     useEffect(() => {
-        if (!token) return
-        fetchProfile(token)
-            .then(setProfile)
-            .catch(() => {
-                // /auth/me é só decoração do cabeçalho — se falhar, o chat continua normal.
-            })
-    }, [token])
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    }, [messages, toolLabel])
 
     async function handleSend() {
         const text = input.trim()
-        if (!text || loading || !token) return
+        if (!text || loading) return
 
-        const nextMessages: ChatMessage[] = [...messages, { role: "user", content: text }]
-        setMessages(nextMessages)
+        // Mostra a fala do usuário e uma bolha vazia do assistente, que vai sendo preenchida pelo streaming.
+        setMessages((prev) => [...prev, { role: "user", content: text }, { role: "assistant", content: "" }])
         setInput("")
         setLoading(true)
+        setToolLabel(null)
+
+        const onEvent = (event: StreamEvent) => {
+            if (event.type === "text") {
+                setToolLabel(null)
+                setMessages((prev) => {
+                    const copy = [...prev]
+                    const last = copy[copy.length - 1]
+                    copy[copy.length - 1] = { ...last, content: last.content + event.data }
+                    return copy
+                })
+            } else if (event.type === "tool") {
+                setToolLabel(TOOL_LABELS[event.name] ?? `executando ${event.name}…`)
+            } else if (event.type === "error") {
+                setMessages((prev) => {
+                    const copy = [...prev]
+                    copy[copy.length - 1] = { role: "assistant", content: event.message }
+                    return copy
+                })
+            }
+        }
 
         try {
-            const updated = await sendChat(nextMessages, token)
-            setMessages(updated)
-            // O limite pode ter mudado se essa mensagem completou uma compra.
-            fetchProfile(token).then(setProfile).catch(() => {})
+            await sendChat(text, onEvent)
         } catch (err) {
             if (err instanceof UnauthorizedError) {
-                logout()
+                onSignOut()
                 return
             }
-            setMessages([
-                ...nextMessages,
-                { role: "assistant", content: "Erro ao falar com o servidor. Tente novamente." },
-            ])
+            onEvent({ type: "error", message: "Erro ao falar com o servidor. Tente novamente." })
         } finally {
             setLoading(false)
+            setToolLabel(null)
         }
     }
 
@@ -66,35 +84,26 @@ function ChatPage() {
             <header className="chat-header">
                 <span className="brand">◈ assistente de compras</span>
                 <div className="chat-header-right">
-                    {profile && (
-                        <span className="limit-pill">
-                            limite:{" "}
-                            {profile.spendingLimit.toLocaleString("pt-BR", {
-                                style: "currency",
-                                currency: "BRL",
-                            })}
-                        </span>
-                    )}
-                    {profile && <span className="username">{profile.name}</span>}
-                    <button className="logout-btn" onClick={logout}>
+                    <button className="logout-btn" onClick={onSignOut}>
                         Sair
                     </button>
                 </div>
             </header>
 
             <div className="chat-messages">
-                {messages
-                    .filter((m) => m.role !== "tool")
-                    .map((m, i) => (
-                        <div key={i} className={`bubble bubble-${m.role}`}>
-                            {m.tool_calls && m.tool_calls.length > 0 ? (
-                                toolCallLabel(m.tool_calls)
-                            ) : (
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content ?? ""}</ReactMarkdown>
-                            )}
-                        </div>
-                    ))}
-                {loading && <div className="bubble bubble-assistant">…</div>}
+                {messages.map((m, i) => (
+                    <div key={i} className={`bubble bubble-${m.role}`}>
+                        {m.role === "assistant" && m.content === "" ? (
+                            <span>{toolLabel ? `🔧 ${toolLabel}` : "…"}</span>
+                        ) : (
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        )}
+                    </div>
+                ))}
+                {toolLabel && messages[messages.length - 1]?.content !== "" && (
+                    <div className="bubble bubble-assistant">🔧 {toolLabel}</div>
+                )}
+                <div ref={bottomRef} />
             </div>
 
             <div className="chat-input">

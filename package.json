@@ -1,0 +1,29 @@
+{
+  "name": "chatbot-pagamentos-aws",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "build": "echo \"nada a compilar: o CDK empacota as Lambdas com esbuild\""
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.700.0",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "aws-jwt-verify": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.0.0",
+    "aws-cdk": "^2.1000.0",
+    "aws-cdk-lib": "^2.230.0",
+    "constructs": "^10.4.2",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

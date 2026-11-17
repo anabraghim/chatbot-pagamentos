@@ -1,28 +1,13 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
-import { AuthProvider, ProtectedRoute } from "./lib/auth"
-import LoginPage from "./pages/LoginPage"
-import RegisterPage from "./pages/RegisterPage"
+import { Authenticator } from "@aws-amplify/ui-react"
 import ChatPage from "./pages/ChatPage"
 
+// O Authenticator só renderiza o chat depois do login no Cognito.
+// hideSignUp: sem opção de criar conta (cadastro só por convite do administrador).
 function App() {
     return (
-        <AuthProvider>
-            <BrowserRouter>
-                <Routes>
-                    <Route path="/login" element={<LoginPage />} />
-                    <Route path="/register" element={<RegisterPage />} />
-                    <Route
-                        path="/chat"
-                        element={
-                            <ProtectedRoute>
-                                <ChatPage />
-                            </ProtectedRoute>
-                        }
-                    />
-                    <Route path="*" element={<Navigate to="/chat" replace />} />
-                </Routes>
-            </BrowserRouter>
-        </AuthProvider>
+        <Authenticator hideSignUp>
+            {({ signOut }) => <ChatPage onSignOut={() => signOut?.()} />}
+        </Authenticator>
     )
 }
 
