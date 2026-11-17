@@ -6,7 +6,21 @@ As regras de negócio **não mudaram**: catálogo, intenção de compra, compra 
 
 > O código da Fase 1 está preservado em [`fase1/`](fase1/) apenas como referência.
 
-**App publicado:** `https://COLE-AQUI-A-URL-DO-AMPLIFY`
+**App publicado (AWS Amplify):** `https://main.d9h4uuxz14997.amplifyapp.com`  
+**API Gateway (`us-east-1`):** `https://zlq1udgpb6.execute-api.us-east-1.amazonaws.com/prod`  
+**Cognito User Pool ID:** `us-east-1_1g2q12nNC` · **Client ID:** `13lq7fqvgr0ivmiki9ofb9qelr`
+
+---
+## Sumário
+
+1. [Arquitetura](#1-arquitetura-como-foi-implementada)
+2. [Rodar o frontend localmente](#2-rodar-o-frontend-localmente-conectado-ao-backend-aws)
+3. [Deploy passo a passo](#3-deploy-da-infraestrutura-passo-a-passo-aws-cdk)
+4. [Modelo do Bedrock](#4-modelo-do-bedrock)
+5. [Modelagem do DynamoDB](#5-modelagem-do-dynamodb)
+6. [Permissões IAM](#6-permissões-iam-menor-privilégio)
+7. [Evidências de funcionamento](#7-evidências-de-funcionamento)
+8. [Como remover todos os recursos](#8-como-remover-todos-os-recursos)
 
 ---
 
@@ -39,10 +53,12 @@ flowchart TD
 **Variação em relação ao desenho de referência (justificada):**
 
 - **API Gateway REST (e não HTTP API).** O desafio exige resposta em *stream* ou WebSocket. O streaming de resposta do API Gateway só existe para REST APIs (`responseTransferMode: STREAM`), não para HTTP APIs.
-- **Lambda authorizer com `aws-jwt-verify` (em vez do authorizer nativo do Cognito).** Valida o JWT do Cognito (assinatura, expiração, emissor e client) e aceita exatamente o formato `Authorization: Bearer <token>` pedido no enunciado. Sem token, ou com formato inválido, o próprio API Gateway responde 401 (`validationRegex`); com token inválido/expirado o authorizer nega e o gateway responde 401. Nada disso chega à Lambda do chat.
-- As tools são Lambdas chamadas diretamente pelo agente (`lambda:InvokeFunction`), sem AgentCore Gateway (extra opcional).
+- **Lambda authorizer com `aws-jwt-verify` (em vez do authorizer nativo do Cognito).** Valida o JWT do Cognito (assinatura, expiração, emissor e client) e aceita exatamente o formato `Authorization: Bearer <token>` pedido no enunciado. Sem token, ou com formato inválido, o próprio API Gateway responde 401 (`validationRegex`); com token inválido ou expirado o authorizer nega e o gateway responde 401. Nada disso chega à Lambda do chat.
+- **Tools como Lambdas chamadas diretamente pelo agente** (`lambda:InvokeFunction`), sem AgentCore Gateway (extra opcional).
 
-Estrutura do repositório:
+**Fluxo de uma mensagem:** o usuário faz login no Cognito → o frontend envia `POST /chat` com `Authorization: Bearer <ID token>` → o API Gateway valida o JWT → a Lambda do chat carrega o histórico, extrai o `sub` do token como `usuario_id` e chama o agente no AgentCore Runtime → o agente decide quais ferramentas usar (catálogo, intenção, compra) e devolve a resposta em *stream* (SSE) → o histórico completo é salvo no DynamoDB.
+
+**Estrutura do repositório:**
 
 ```
 frontend/   React + Vite, Amplify Auth (Authenticator com hideSignUp), consome o stream
@@ -50,10 +66,35 @@ api/        Lambdas da API: authorizer, chat (streaming), conversas
 agent/      Agente Strands (Python) implantado no AgentCore Runtime
 tools/      Lambdas das 3 ferramentas (listar_catalogo, registrar_intencao, realizar_compra)
 infra/      AWS CDK (TypeScript): Cognito, DynamoDB, Lambdas, API Gateway, AgentCore, IAM
+docs/       Evidências de funcionamento (prints dos fluxos e validações)
 fase1/      Código da Fase 1 (referência)
 ```
+## 2. Como Rodar o Frontend Localmente (conectado ao Backend AWS)
 
-## 2. Deploy passo a passo
+Para executar o frontend na sua máquina em vez de usar a URL do Amplify, aponte as variáveis de ambiente para o backend e o Cognito já implantados (`us-east-1`).
+
+```bash
+cd frontend
+npm install
+```
+
+Crie o arquivo `frontend/.env`:
+
+```env
+VITE_API_URL=https://zlq1udgpb6.execute-api.us-east-1.amazonaws.com/prod
+VITE_USER_POOL_ID=us-east-1_1g2q12nNC
+VITE_USER_POOL_CLIENT_ID=13lq7fqvgr0ivmiki9ofb9qelr
+```
+
+```bash
+npm run dev
+```
+
+Abra http://localhost:5173 e entre com um usuário criado no Cognito.
+
+> Atenção ao CORS: o backend só aceita a origem configurada em `frontendOrigin`. Se ele estiver restrito ao Amplify, o `localhost` será bloqueado. Para testar localmente, faça o deploy com `npx cdk deploy -c frontendOrigin=http://localhost:5173` e depois volte para a URL do Amplify.
+
+## 3. Deploy da Infraestrutura passo a passo (AWS CDK)
 
 ### Pré-requisitos
 
@@ -75,28 +116,30 @@ npx cdk bootstrap aws://SEU_ACCOUNT_ID/us-east-1
 npx cdk deploy
 
 # 4) Crie o app no Amplify (console) conectando este repositório, pasta raiz "frontend"
-#    -> anote a URL, ex.: https://main.d1a2b3c4d5.amplifyapp.com
+#    -> URL gerada: https://main.d9h4uuxz14997.amplifyapp.com
 
 # 5) Redeploy restringindo o CORS à origem do Amplify
-npx cdk deploy -c frontendOrigin=https://main.d1a2b3c4d5.amplifyapp.com
+npx cdk deploy -c frontendOrigin=https://main.d9h4uuxz14997.amplifyapp.com
 
 # 6) No Amplify: Hosting > Environment variables, cadastre as saídas do deploy:
 #    VITE_API_URL, VITE_USER_POOL_ID, VITE_USER_POOL_CLIENT_ID  -> redeploy do front
 
 # 7) Crie usuários (cadastro só por convite)
 aws cognito-idp admin-create-user --region us-east-1 \
-  --user-pool-id <UserPoolId> --username email@exemplo.com \
+  --user-pool-id us-east-1_1g2q12nNC --username email@exemplo.com \
   --user-attributes Name=email,Value=email@exemplo.com Name=email_verified,Value=true \
   --desired-delivery-mediums EMAIL
 ```
 
-Detalhes e solução de problemas: ver o guia que acompanha o projeto.
+O Cognito envia por e-mail uma senha temporária; no primeiro login o app pede para definir a senha definitiva.
 
-## 3. Modelo do Bedrock
+Se algo falhar: veja a aba **Events** da stack no CloudFormation e os logs no CloudWatch (`/aws/lambda/...` e `/aws/bedrock-agentcore/runtimes/...`).
 
-**Claude Haiku 4.5**, pelo perfil de inferência geo-US `us.anthropic.claude-haiku-4-5` (em us-east-1 o modelo só está disponível via perfil de inferência entre regiões). É o modelo recomendado no enunciado: baixo custo, baixa latência e bom desempenho em *tool calling*. Pode ser trocado sem editar código: `npx cdk deploy -c modelId=<id-do-perfil>`.
+## 4. Modelo do Bedrock
 
-## 4. Modelagem do DynamoDB
+**Claude Haiku 4.5**, pelo perfil de inferência geo-US `us.anthropic.claude-haiku-4-5-20251001-v1:0` (em us-east-1 o modelo só está disponível via perfil de inferência entre regiões). É o modelo recomendado no enunciado: baixo custo, baixa latência e bom desempenho em *tool calling*. Pode ser trocado sem editar código: `npx cdk deploy -c modelId=<id-do-perfil>`.
+
+## 5. Modelagem do DynamoDB
 
 Todas as tabelas são on-demand (`PAY_PER_REQUEST`). Dinheiro é guardado em **centavos (inteiro)** para evitar erro de ponto flutuante.
 
@@ -108,11 +151,29 @@ Todas as tabelas são on-demand (`PAY_PER_REQUEST`). Dinheiro é guardado em **c
 | `Intentions` | PK `intentionId` | `userId`, `productId`, `quantity`, `unitPriceCents`, `totalCents`, `currency`, `status` (`pendente`/`paga`), `expiresAt` (epoch ms), `createdAt`, `paidAt`, `paymentMethod`. |
 | `Transactions` | PK `intentionId` | `transactionId`, `userId`, `amountCents`, `currency`, `paymentMethod`, `status`, `createdAt`. A chave ser o `intentionId` garante **no máximo uma transação por intenção**. |
 
-**Sem duplicidade (escritas condicionais).** `realizar_compra` faz uma única `TransactWriteItems` (tudo ou nada) com 4 operações condicionais: (0) intenção só vira `paga` se estiver `pendente`, for do usuário e não tiver expirado; (1) o limite só é debitado se `availableLimitCents >= valor`; (2) o estoque só baixa se `stock >= quantidade`; (3) a transação só é criada se ainda não existir para aquela intenção. Se a mesma chamada chegar duas vezes (inclusive em paralelo), só uma efetiva; a outra recebe `INTENCAO_JA_PAGA`.
+**Sem duplicidade (escritas condicionais).** `realizar_compra` faz uma única `TransactWriteItems` (tudo ou nada) com 4 operações condicionais:
+
+0. a intenção só vira `paga` se estiver `pendente`, for do usuário e não tiver expirado;
+1. o limite só é debitado se `availableLimitCents >= valor`;
+2. o estoque só baixa se `stock >= quantidade`;
+3. a transação só é criada se ainda não existir para aquela intenção.
+
+Se a mesma chamada chegar duas vezes (inclusive em paralelo), só uma efetiva; a outra recebe `INTENCAO_JA_PAGA`.
+
+**Padrões de acesso (por que essas chaves):**
+
+| Operação | Tabela | Acesso |
+|---|---|---|
+| Carregar/salvar histórico do chat | `Conversations` | `GetItem`/`PutItem` por `userId` + `conversationId` |
+| Listar catálogo | `Products` | `Scan` (poucos itens; sem necessidade de índice) |
+| Registrar intenção | `Products` → `Intentions` | `GetItem` do produto (preço vem do banco) e `PutItem` da intenção |
+| Realizar compra | `Intentions`, `Users`, `Products`, `Transactions` | uma `TransactWriteItems` com 4 condições |
+
+Todo acesso é por chave primária, então não há índices secundários. O `userId` é sempre o `sub` do token, nunca um valor enviado pelo cliente. A expiração da intenção é verificada na hora da compra (`expiresAt`), não por TTL do DynamoDB.
 
 **Limites conhecidos:** a conversa de cada usuário é um único item (máx. 400 KB; acima de ~300 KB os turnos mais antigos são descartados). O catálogo usa `Scan` (adequado para poucos produtos).
 
-## 5. Permissões IAM (menor privilégio)
+## 6. Permissões IAM (menor privilégio)
 
 | Role | Pode | Não pode |
 |---|---|---|
@@ -128,18 +189,27 @@ Nenhuma política usa `Action: "*"` com `Resource: "*"` nem políticas gerenciad
 
 **Regras de segurança preservadas:** o `usuario_id` vem do `sub` do token validado (nunca do corpo da requisição nem de argumento do modelo; é injetado dentro das funções de ferramenta do agente); o valor da compra vem da intenção gravada; `realizar_compra` só aceita intenções do próprio usuário, ainda não pagas e não expiradas.
 
-## 6. Evidências
+## 7. Evidências
 
-> Substitua pelos seus prints/vídeo (pasta `docs/evidencias/`).
+### 7.1 Tela de login (Amazon Cognito, apenas por convite)
+![Tela de login](docs/evidencias/login.png)
 
-- Login: `docs/evidencias/login.png`
-- Chamada sem token rejeitada com 401: `docs/evidencias/401.png`
-- Compra com cartão: `docs/evidencias/compra-cartao.png`
-- Compra com Pix: `docs/evidencias/compra-pix.png`
-- Tentativa bloqueada por limite excedido: `docs/evidencias/limite-excedido.png`
-- Tentativa com `intencao_id` inválido: `docs/evidencias/id-invalido.png`
+### 7.2 Chamada à API sem token ou com token inválido rejeitada com 401
+![401 Unauthorized](docs/evidencias/401.png)
 
-## 7. Como remover todos os recursos
+### 7.3 Compra bem-sucedida com cartão
+![Compra com cartão](docs/evidencias/compra-cartao.png)
+
+### 7.4 Compra bem-sucedida com Pix
+![Compra com Pix](docs/evidencias/compra-pix.png)
+
+### 7.5 Tentativa bloqueada por limite excedido
+![Limite excedido](docs/evidencias/limite-excedido.png)
+
+### 7.6 Tentativa com `intencao_id` inválido recusada
+![ID inválido](docs/evidencias/id-invalido.png)
+
+## 8. Como remover todos os recursos
 
 ```bash
 # 1) Backend (API Gateway, Lambdas, tabelas, Cognito, runtime do AgentCore, roles)
